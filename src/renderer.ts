@@ -83,10 +83,13 @@ export class Renderer {
   }
 
   /** Check if mouse clicks the sell button */
-  mouseToSellBtn(e: MouseEvent): boolean {
+  mouseToSellBtn(e: MouseEvent, isWall = false): boolean {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return false;
+    if (isWall) {
+      return x >= 10 && x < 90;
+    }
     const btnW = 90;
     const gap = 6;
     const sellX = gap * 4 + btnW * 3;
@@ -217,13 +220,20 @@ export class Renderer {
       ctx.strokeStyle = '#7c4dff';
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, TILE, TILE);
-      // Range circle
       const cx = x + TILE / 2;
       const cy = y + TILE / 2;
       ctx.strokeStyle = 'rgba(124,77,255,0.4)';
       ctx.beginPath();
       ctx.arc(cx, cy, towerRange(t) * TILE, 0, Math.PI * 2);
       ctx.stroke();
+    }
+
+    // ── Selected wall highlight ──
+    if (state.selectedWall) {
+      const w = state.selectedWall;
+      ctx.strokeStyle = '#ff9800';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(w.col * TILE, w.row * TILE, TILE, TILE);
     }
 
     // ── Hover / selection preview ──
@@ -463,9 +473,15 @@ export class Renderer {
     ctx.fillStyle = '#16213e';
     ctx.fillRect(0, barY, CANVAS_W, HUD_BOT_H);
 
-    // If a tower is selected, show upgrade UI instead
+    // If a tower is selected, show upgrade UI
     if (state.selectedTower) {
       this.drawUpgradeBar(state, barY);
+      return;
+    }
+
+    // If a wall is selected, show sell UI
+    if (state.selectedWall) {
+      this.drawWallSellBar(state, barY);
       return;
     }
 
@@ -558,6 +574,23 @@ export class Renderer {
     const rate = towerFireRate(tower).toFixed(2);
     const dmg = towerDamage(tower);
     ctx.fillText(`${def.name}  rng:${range}  spd:${rate}s  dmg:${dmg}`, sellX + 80, barY + 26);
+  }
+
+  private drawWallSellBar(_state: GameState, barY: number): void {
+    const ctx = this.ctx;
+    const sv = Math.floor(WALL_COST * 0.6);
+    // Sell button
+    ctx.fillStyle = '#b71c1c';
+    ctx.fillRect(10, barY + 4, 80, HUD_BOT_H - 8);
+    ctx.fillStyle = '#ffcdd2';
+    ctx.font = '11px monospace';
+    ctx.fillText('Sell Wall', 18, barY + 18);
+    ctx.font = '10px monospace';
+    ctx.fillText(`+$${sv}`, 18, barY + 32);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '10px monospace';
+    ctx.fillText('Wall  (click to sell, ESC to deselect)', 100, barY + 26);
   }
 
   private drawOverlay(state: GameState): void {

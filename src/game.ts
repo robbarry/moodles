@@ -23,6 +23,7 @@ import { type PeerConnection, type Role, type NetMessage } from './net';
 export interface WallEntity {
   col: number;
   row: number;
+  owner: 'host' | 'guest' | 'solo';
 }
 
 export const MAX_UPGRADE = 3;
@@ -131,6 +132,7 @@ export interface GameState {
   // UI state
   selectedBuild: 'wall' | TowerKind | null;
   selectedTower: TowerEntity | null;
+  selectedWall: WallEntity | null;
   hoverCol: number;
   hoverRow: number;
   autoStart: boolean;
@@ -196,6 +198,7 @@ export function createGameState(): GameState {
     spawnTimer: 0,
     selectedBuild: null,
     selectedTower: null,
+    selectedWall: null,
     hoverCol: -1,
     hoverRow: -1,
     autoStart: false,
@@ -321,7 +324,7 @@ export function placeBuild(state: GameState, col: number, row: number, owner: 'h
   // Commit the placement
   spendCoins(state, owner, cost);
   if (state.selectedBuild === 'wall') {
-    state.walls.push({ col, row });
+    state.walls.push({ col, row, owner });
   } else {
     state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, recoilTimer: 0, owner });
   }
@@ -363,6 +366,20 @@ export function sellTower(state: GameState, tower: TowerEntity): void {
   state.grid.setCell(tower.col, tower.row, CellType.Empty);
   state.towers = state.towers.filter((t) => t !== tower);
   state.selectedTower = null;
+  recalcPath(state);
+  for (const enemy of state.enemies) {
+    if (enemy.kind !== EnemyKind.Wanderer) {
+      recalcEnemyPath(state, enemy);
+    }
+  }
+}
+
+export function sellWall(state: GameState, wall: WallEntity): void {
+  sfxSell();
+  addCoins(state, wall.owner, Math.floor(WALL_COST * 0.6));
+  state.grid.setCell(wall.col, wall.row, CellType.Empty);
+  state.walls = state.walls.filter((w) => w !== wall);
+  state.selectedWall = null;
   recalcPath(state);
   for (const enemy of state.enemies) {
     if (enemy.kind !== EnemyKind.Wanderer) {
@@ -1036,6 +1053,9 @@ export class Game {
       const selTowerPos = this.state.selectedTower
         ? { col: this.state.selectedTower.col, row: this.state.selectedTower.row }
         : null;
+      const selWallPos = this.state.selectedWall
+        ? { col: this.state.selectedWall.col, row: this.state.selectedWall.row }
+        : null;
       const hover = { col: this.state.hoverCol, row: this.state.hoverRow };
 
       applySerializedState(this.state, msg.state as SerializedState);
@@ -1044,10 +1064,14 @@ export class Game {
       this.state.selectedBuild = selBuild;
       this.state.hoverCol = hover.col;
       this.state.hoverRow = hover.row;
-      // Re-resolve selectedTower by position (old reference is stale)
       if (selTowerPos) {
         this.state.selectedTower = this.state.towers.find(
           (t) => t.col === selTowerPos.col && t.row === selTowerPos.row
+        ) ?? null;
+      }
+      if (selWallPos) {
+        this.state.selectedWall = this.state.walls.find(
+          (w) => w.col === selWallPos.col && w.row === selWallPos.row
         ) ?? null;
       }
       // Host cursor becomes our peer cursor
@@ -1082,6 +1106,11 @@ export class Game {
         (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
       );
       if (tower) sellTower(this.state, tower);
+    } else if (cmd === 'sellWall') {
+      const wall = this.state.walls.find(
+        (w) => w.col === (msg.col as number) && w.row === (msg.row as number)
+      );
+      if (wall) sellWall(this.state, wall);
     } else if (cmd === 'upgrade') {
       const tower = this.state.towers.find(
         (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
@@ -1204,8 +1233,20 @@ export class Game {
         }
       }
 
+      // Wall sell
+      if (this.state.selectedWall) {
+        if (this.renderer.mouseToSellBtn(e, true)) {
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'sellWall', col: this.state.selectedWall.col, row: this.state.selectedWall.row });
+          } else {
+            sellWall(this.state, this.state.selectedWall);
+          }
+          return;
+        }
+      }
+
       // Build bar buttons (local UI selection for both roles)
-      if (!this.state.selectedTower) {
+      if (!this.state.selectedTower && !this.state.selectedWall) {
         const btnIdx = this.renderer.mouseToButton(e);
         if (btnIdx >= 0) {
           const builds: ('wall' | TowerKind)[] = [
@@ -1223,17 +1264,27 @@ export class Game {
       // Grid click
       const { col, row, inGrid } = this.renderer.mouseToGrid(e);
       if (inGrid) {
-        // Select tower (local UI)
+        // Select tower
         const clickedTower = this.state.towers.find((t) => t.col === col && t.row === row);
         if (clickedTower) {
           this.state.selectedTower = this.state.selectedTower === clickedTower ? null : clickedTower;
+          this.state.selectedWall = null;
           this.state.selectedBuild = null;
           return;
         }
 
-        if (this.state.selectedTower) {
+        // Select wall
+        const clickedWall = this.state.walls.find((w) => w.col === col && w.row === row);
+        if (clickedWall) {
+          this.state.selectedWall = this.state.selectedWall === clickedWall ? null : clickedWall;
           this.state.selectedTower = null;
+          this.state.selectedBuild = null;
+          return;
         }
+
+        // Deselect
+        if (this.state.selectedTower) this.state.selectedTower = null;
+        if (this.state.selectedWall) this.state.selectedWall = null;
 
         // Place
         if (this.state.selectedBuild !== null) {
@@ -1250,14 +1301,19 @@ export class Game {
       e.preventDefault();
       this.state.selectedBuild = null;
       this.state.selectedTower = null;
+      this.state.selectedWall = null;
     });
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         this.state.selectedBuild = null;
         this.state.selectedTower = null;
+        this.state.selectedWall = null;
       }
-      if (e.key >= '1' && e.key <= '7') this.state.selectedTower = null;
+      if (e.key >= '1' && e.key <= '7') {
+        this.state.selectedTower = null;
+        this.state.selectedWall = null;
+      }
       if (e.key === '1') this.state.selectedBuild = 'wall';
       if (e.key === '2') this.state.selectedBuild = TowerKind.PeaShooter;
       if (e.key === '3') this.state.selectedBuild = TowerKind.SlopCannon;
