@@ -1,4 +1,6 @@
-// ── WebRTC peer-to-peer networking for co-op multiplayer ──
+// ── PeerJS networking for co-op multiplayer ──
+
+import Peer, { type DataConnection } from 'peerjs';
 
 export type Role = 'host' | 'guest' | 'solo';
 
@@ -7,109 +9,130 @@ export interface NetMessage {
   [key: string]: unknown;
 }
 
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// Room code: MOODLE-XXXX where X is random alphanumeric
+function generateRoomCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous I/1/O/0
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `MOODLE-${code}`;
+}
 
 export class PeerConnection {
-  pc: RTCPeerConnection;
-  dc: RTCDataChannel | null = null;
   role: Role;
+  peer: Peer | null = null;
+  conn: DataConnection | null = null;
   connected = false;
+  roomCode = '';
   onMessage: ((msg: NetMessage) => void) | null = null;
   onConnected: (() => void) | null = null;
   onDisconnected: (() => void) | null = null;
+  onError: ((err: string) => void) | null = null;
 
   constructor(role: Role) {
     this.role = role;
-    this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-    this.pc.oniceconnectionstatechange = () => {
-      if (this.pc.iceConnectionState === 'disconnected' || this.pc.iceConnectionState === 'failed') {
-        this.connected = false;
-        this.onDisconnected?.();
-      }
-    };
   }
 
-  /** Host: create offer and return it as a compact string */
-  async createOffer(): Promise<string> {
-    this.dc = this.pc.createDataChannel('game');
-    this.setupDataChannel(this.dc);
+  /** Host: create a room and wait for a guest to join */
+  async host(): Promise<string> {
+    this.roomCode = generateRoomCode();
 
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
+    return new Promise((resolve, reject) => {
+      // Use the room code as the peer ID so the guest can find us
+      this.peer = new Peer(this.roomCode);
 
-    // Wait for ICE gathering to complete
-    await this.waitForIce();
-    return btoa(JSON.stringify(this.pc.localDescription));
+      this.peer.on('open', () => {
+        resolve(this.roomCode);
+      });
+
+      this.peer.on('error', (err) => {
+        // If the ID is taken, try again with a new code
+        if (err.type === 'unavailable-id') {
+          this.roomCode = generateRoomCode();
+          this.peer?.destroy();
+          this.peer = new Peer(this.roomCode);
+          this.peer.on('open', () => resolve(this.roomCode));
+          this.peer.on('error', (e) => reject(e.message));
+          this.peer.on('connection', (conn) => this.setupConnection(conn));
+        } else {
+          reject(err.message);
+        }
+      });
+
+      this.peer.on('connection', (conn) => {
+        this.setupConnection(conn);
+      });
+    });
   }
 
-  /** Guest: accept an offer string and return an answer string */
-  async acceptOffer(offerStr: string): Promise<string> {
-    // Listen for incoming data channel
-    this.pc.ondatachannel = (e) => {
-      this.dc = e.channel;
-      this.setupDataChannel(this.dc);
-    };
+  /** Guest: join a room by code */
+  async join(roomCode: string): Promise<void> {
+    this.roomCode = roomCode.toUpperCase().trim();
 
-    const offer = JSON.parse(atob(offerStr)) as RTCSessionDescriptionInit;
-    await this.pc.setRemoteDescription(offer);
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
+    return new Promise((resolve, reject) => {
+      this.peer = new Peer();
 
-    await this.waitForIce();
-    return btoa(JSON.stringify(this.pc.localDescription));
-  }
+      this.peer.on('open', () => {
+        const conn = this.peer!.connect(this.roomCode, { reliable: true });
+        this.setupConnection(conn);
 
-  /** Host: accept the answer string from the guest */
-  async acceptAnswer(answerStr: string): Promise<void> {
-    const answer = JSON.parse(atob(answerStr)) as RTCSessionDescriptionInit;
-    await this.pc.setRemoteDescription(answer);
+        conn.on('open', () => {
+          resolve();
+        });
+
+        conn.on('error', (err) => {
+          reject(err.message ?? 'Connection failed');
+        });
+      });
+
+      this.peer.on('error', (err) => {
+        reject(err.message);
+      });
+
+      // Timeout
+      setTimeout(() => {
+        if (!this.connected) {
+          reject('Connection timed out — check the room code');
+        }
+      }, 10000);
+    });
   }
 
   send(msg: NetMessage): void {
-    if (this.dc && this.dc.readyState === 'open') {
-      this.dc.send(JSON.stringify(msg));
+    if (this.conn?.open) {
+      this.conn.send(JSON.stringify(msg));
     }
   }
 
   close(): void {
-    this.dc?.close();
-    this.pc.close();
+    this.conn?.close();
+    this.peer?.destroy();
     this.connected = false;
   }
 
-  private setupDataChannel(dc: RTCDataChannel): void {
-    dc.onopen = () => {
+  private setupConnection(conn: DataConnection): void {
+    this.conn = conn;
+
+    conn.on('open', () => {
       this.connected = true;
       this.onConnected?.();
-    };
-    dc.onclose = () => {
+    });
+
+    conn.on('close', () => {
       this.connected = false;
       this.onDisconnected?.();
-    };
-    dc.onmessage = (e) => {
+    });
+
+    conn.on('data', (data) => {
       try {
-        const msg = JSON.parse(e.data as string) as NetMessage;
+        const msg = JSON.parse(data as string) as NetMessage;
         this.onMessage?.(msg);
       } catch { /* ignore bad messages */ }
-    };
-  }
+    });
 
-  private waitForIce(): Promise<void> {
-    return new Promise((resolve) => {
-      if (this.pc.iceGatheringState === 'complete') {
-        resolve();
-        return;
-      }
-      const check = () => {
-        if (this.pc.iceGatheringState === 'complete') {
-          this.pc.removeEventListener('icegatheringstatechange', check);
-          resolve();
-        }
-      };
-      this.pc.addEventListener('icegatheringstatechange', check);
-      // Fallback timeout — ICE gathering shouldn't take more than 5s on LAN
-      setTimeout(resolve, 5000);
+    conn.on('error', (err) => {
+      this.onError?.(err.message ?? 'Connection error');
     });
   }
 }
