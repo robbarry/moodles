@@ -984,37 +984,49 @@ export class Game {
   start(): void {
     this.lastTime = performance.now();
     requestAnimationFrame((t) => this.loop(t));
+
+    if (this.role === 'host') {
+      // Run simulation + broadcast on setInterval so it continues even
+      // when the browser throttles rAF for background/unfocused tabs
+      setInterval(() => {
+        const now = performance.now();
+        const dt = Math.min((now - this.lastSimTime) / 1000, 0.1) * this.state.gameSpeed;
+        this.lastSimTime = now;
+        update(this.state, dt);
+        effects.update(dt);
+        this.broadcastState();
+      }, 100); // 10fps simulation + broadcast
+      this.lastSimTime = performance.now();
+    }
+  }
+  private lastSimTime = 0;
+
+  /** Send current state to the guest */
+  private broadcastState(): void {
+    if (!this.peer?.connected) return;
+    this.peer.send({
+      type: 'state',
+      state: serializeState(this.state),
+      hostCursorCol: this.state.hoverCol,
+      hostCursorRow: this.state.hoverRow,
+    });
   }
 
   private loop(time: number): void {
     const dt = Math.min((time - this.lastTime) / 1000, 0.1) * this.state.gameSpeed;
     this.lastTime = time;
 
-    if (this.role !== 'guest') {
-      // Host or solo: run the simulation
+    // Solo: simulate in rAF. Host: simulation runs in setInterval.
+    if (this.role === 'solo') {
       update(this.state, dt);
+      effects.update(dt);
     }
-    effects.update(dt);
-    // Set coins to the current player's balance for HUD display
+
+    // Set coins for HUD display
     if (this.role === 'host') this.state.coins = this.state.hostCoins;
     else if (this.role === 'guest') this.state.coins = this.state.guestCoins;
+
     this.renderer.draw(this.state);
-
-    // Host: broadcast state at ~15fps
-    if (this.role === 'host' && this.peer?.connected) {
-      this.broadcastTimer += dt;
-      if (this.broadcastTimer >= 1 / 10) {
-        this.broadcastTimer = 0;
-        // Set host cursor as peer cursor for the guest
-        this.peer.send({
-          type: 'state',
-          state: serializeState(this.state),
-          hostCursorCol: this.state.hoverCol,
-          hostCursorRow: this.state.hoverRow,
-        });
-      }
-    }
-
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -1045,8 +1057,9 @@ export class Game {
     }
 
     if (this.role === 'host' && msg.type === 'cmd') {
-      // Guest sent a command — apply it
       this.applyGuestCommand(msg);
+      // Immediately broadcast so guest sees the result without waiting
+      this.broadcastState();
     }
 
     if (this.role === 'host' && msg.type === 'cursor') {
