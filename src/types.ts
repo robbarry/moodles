@@ -85,6 +85,7 @@ export enum EnemyKind {
   Walker,
   Flyer,
   Sneaker,
+  Wanderer,
 }
 
 export interface EnemyDef {
@@ -125,13 +126,22 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     wallDps: 15,
     color: '#00bcd4',
   },
+  [EnemyKind.Wanderer]: {
+    kind: EnemyKind.Wanderer,
+    name: 'Wanderer',
+    baseHp: 70,
+    speed: 0.8,
+    reward: 6,
+    wallDps: 25,
+    color: '#ff5722',
+  },
 };
 
 // ── Economy ──
 
 export const STARTING_COINS = 50;
 export const STARTING_LIVES = 10;
-export const WALL_COST = 5;
+export const WALL_COST = 3;
 export const WAVE_BONUS = 10;
 
 // ── Game state ──

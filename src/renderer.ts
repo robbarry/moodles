@@ -1,7 +1,7 @@
 import {
   COLS, ROWS, TILE, SCALE, CANVAS_W, CANVAS_H,
   CellType, HUD_TOP_H, HUD_BOT_H,
-  TowerKind, TOWER_DEFS, GamePhase,
+  TowerKind, TOWER_DEFS, GamePhase, WALL_COST,
 } from './types';
 import {
   spawnSprite, goalSprite, wallSprite,
@@ -178,8 +178,17 @@ export class Renderer {
       const sprite = TOWER_SPRITES[tower.kind];
       if (sprite) ctx.drawImage(sprite, x, y);
 
+      // Tower HP bar (only show when damaged)
+      if (tower.hp < tower.maxHp) {
+        const pct = tower.hp / tower.maxHp;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(x + 2, y - 4, TILE - 4, 3);
+        ctx.fillStyle = pct > 0.5 ? '#2196f3' : pct > 0.25 ? '#ff9800' : '#f44336';
+        ctx.fillRect(x + 2, y - 4, (TILE - 4) * pct, 3);
+      }
+
       // Upgrade pips
-      const totalLevels = tower.rangeLevel + tower.speedLevel;
+      const totalLevels = tower.rangeLevel + tower.speedLevel + tower.damageLevel;
       if (totalLevels > 0) {
         for (let i = 0; i < totalLevels; i++) {
           ctx.fillStyle = '#ffeb3b';
@@ -354,10 +363,10 @@ export class Renderer {
     }
 
     const items: { label: string; cost: number; key: 'wall' | TowerKind }[] = [
-      { label: 'Wall', cost: 5, key: 'wall' },
-      { label: 'Pea', cost: 15, key: TowerKind.PeaShooter },
-      { label: 'Slop', cost: 30, key: TowerKind.SlopCannon },
-      { label: 'Zap', cost: 40, key: TowerKind.Zapper },
+      { label: 'Wall', cost: WALL_COST, key: 'wall' as const },
+      { label: 'Pea', cost: TOWER_DEFS[TowerKind.PeaShooter].cost, key: TowerKind.PeaShooter },
+      { label: 'Slop', cost: TOWER_DEFS[TowerKind.SlopCannon].cost, key: TowerKind.SlopCannon },
+      { label: 'Zap', cost: TOWER_DEFS[TowerKind.Zapper].cost, key: TowerKind.Zapper },
     ];
 
     const btnW = 80;

@@ -75,6 +75,12 @@ export interface TowerEntity {
   rangeLevel: number;
   speedLevel: number;
   damageLevel: number;
+  hp: number;
+  maxHp: number;
+}
+
+export function towerMaxHp(kind: TowerKind): number {
+  return TOWER_DEFS[kind].cost * 10;
 }
 
 export interface EnemyEntity {
@@ -88,8 +94,10 @@ export interface EnemyEntity {
   path: Position[];
   pathIndex: number;
   wallTarget: Position | null;
+  towerTarget: TowerEntity | null;
   reward: number;
   wallDps: number;
+  wanderAngle: number;  // for Wanderer's semi-random movement
 }
 
 export interface FloatingDamage {
@@ -130,6 +138,7 @@ export interface GameState {
   gameSpeed: number;  // 1, 2, or 3
   musicOn: boolean;
   audioInitialized: boolean;
+  mouseDown: boolean;
 
   // Path cache (recalculated on build)
   cachedPath: Position[] | null;
@@ -164,6 +173,7 @@ export function createGameState(): GameState {
     gameSpeed: 1,
     musicOn: false,
     audioInitialized: false,
+    mouseDown: false,
     cachedPath: null,
     towerCostMap: buildTowerCostMap([]),
   };
@@ -217,7 +227,8 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
     if (state.coins < def.cost) return false;
     state.coins -= def.cost;
     state.grid.setCell(col, row, CellType.Tower);
-    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0 });
+    const hp = towerMaxHp(state.selectedBuild);
+    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, hp, maxHp: hp });
   }
 
   recalcPath(state);
@@ -318,11 +329,13 @@ function spawnEnemy(state: GameState, kind: EnemyKind, hpMult: number): void {
     path: [],
     pathIndex: 0,
     wallTarget: null,
+    towerTarget: null,
     reward: def.reward,
     wallDps: def.wallDps,
+    wanderAngle: Math.random() * Math.PI * 2,
   };
 
-  if (kind === EnemyKind.Walker || kind === EnemyKind.Sneaker) {
+  if (kind !== EnemyKind.Flyer) {
     recalcEnemyPath(state, enemy);
   }
 
@@ -341,10 +354,36 @@ function recalcEnemyPath(state: GameState, enemy: EnemyEntity): void {
     enemy.path = path;
     enemy.pathIndex = 0;
     enemy.wallTarget = null;
+    enemy.towerTarget = null;
   } else {
     enemy.path = [];
-    enemy.wallTarget = findNearestWall(state.grid, currentTile);
+    // Find nearest wall or tower to attack
+    const nearestWall = findNearestWall(state.grid, currentTile);
+    const nearestTower = findNearestTower(state, currentTile);
+    // Attack whichever is closer
+    const wallDist = nearestWall ? Math.abs(nearestWall.col - currentTile.col) + Math.abs(nearestWall.row - currentTile.row) : Infinity;
+    const towerDist = nearestTower ? Math.abs(nearestTower.col - currentTile.col) + Math.abs(nearestTower.row - currentTile.row) : Infinity;
+    if (towerDist < wallDist && nearestTower) {
+      enemy.towerTarget = nearestTower;
+      enemy.wallTarget = null;
+    } else {
+      enemy.wallTarget = nearestWall;
+      enemy.towerTarget = null;
+    }
   }
+}
+
+function findNearestTower(state: GameState, from: Position): TowerEntity | null {
+  let best: TowerEntity | null = null;
+  let bestDist = Infinity;
+  for (const tower of state.towers) {
+    const dist = Math.abs(tower.col - from.col) + Math.abs(tower.row - from.row);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = tower;
+    }
+  }
+  return best;
 }
 
 // ── Update loop ──
@@ -435,9 +474,37 @@ function updateEnemies(state: GameState, dt: number): void {
       const move = enemy.speed * TILE * dt;
       enemy.x += (dx / dist) * move;
       enemy.y += (dy / dist) * move;
+    } else if (enemy.kind === EnemyKind.Wanderer) {
+      // Wanderer: semi-random movement biased toward goal
+      updateWanderer(state, enemy, dt, toRemove);
     } else {
-      // Walker — follow path or attack wall
-      if (enemy.wallTarget) {
+      // Walker/Sneaker — follow path, attack walls or towers if blocked
+      if (enemy.towerTarget) {
+        // Move toward tower and attack it
+        const tower = enemy.towerTarget;
+        // Check tower still exists
+        if (!state.towers.includes(tower)) {
+          enemy.towerTarget = null;
+          recalcEnemyPath(state, enemy);
+          continue;
+        }
+        const tx = tower.col * TILE + TILE / 2;
+        const ty = tower.row * TILE + TILE / 2;
+        const dx = tx - enemy.x;
+        const dy = ty - enemy.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < TILE) {
+          tower.hp -= enemy.wallDps * dt;
+          if (tower.hp <= 0) {
+            destroyTower(state, tower);
+          }
+        } else {
+          const move = enemy.speed * TILE * dt;
+          enemy.x += (dx / dist) * move;
+          enemy.y += (dy / dist) * move;
+        }
+      } else if (enemy.wallTarget) {
         // Move toward wall and attack it
         const wx = enemy.wallTarget.col * TILE + TILE / 2;
         const wy = enemy.wallTarget.row * TILE + TILE / 2;
@@ -446,17 +513,14 @@ function updateEnemies(state: GameState, dt: number): void {
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         if (dist < TILE) {
-          // Attack the wall
           const wall = state.walls.find(
             (w) => w.col === enemy.wallTarget!.col && w.row === enemy.wallTarget!.row
           );
           if (wall) {
             wall.hp -= enemy.wallDps * dt;
             if (wall.hp <= 0) {
-              // Wall destroyed
               sfxWallBreak();
               destroyWall(state, wall);
-              // Recalc all ground enemy paths
               for (const e of state.enemies) {
                 if (e.kind !== EnemyKind.Flyer) {
                   recalcEnemyPath(state, e);
@@ -464,7 +528,6 @@ function updateEnemies(state: GameState, dt: number): void {
               }
             }
           } else {
-            // Wall already gone, recalc
             recalcEnemyPath(state, enemy);
           }
         } else {
@@ -473,11 +536,10 @@ function updateEnemies(state: GameState, dt: number): void {
           enemy.y += (dy / dist) * move;
         }
       } else if (enemy.path.length > 0) {
-        // Follow path
         const target = enemy.path[enemy.pathIndex];
         if (!target) {
-          // Reached goal
           state.lives--;
+          sfxLifeLost();
           toRemove.push(enemy.id);
           continue;
         }
@@ -490,9 +552,9 @@ function updateEnemies(state: GameState, dt: number): void {
 
         if (dist < 2) {
           enemy.pathIndex++;
-          // Check if we reached the goal
           if (enemy.pathIndex >= enemy.path.length) {
             state.lives--;
+            sfxLifeLost();
             toRemove.push(enemy.id);
             continue;
           }
@@ -502,7 +564,6 @@ function updateEnemies(state: GameState, dt: number): void {
           enemy.y += (dy / dist) * move;
         }
       } else {
-        // No path and no wall target — recalc
         recalcEnemyPath(state, enemy);
       }
     }
@@ -511,10 +572,98 @@ function updateEnemies(state: GameState, dt: number): void {
   state.enemies = state.enemies.filter((e) => !toRemove.includes(e.id));
 }
 
+function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemove: number[]): void {
+  const goalX = state.grid.goal.col * TILE + TILE / 2;
+  const goalY = state.grid.goal.row * TILE + TILE / 2;
+  const dx = goalX - enemy.x;
+  const dy = goalY - enemy.y;
+  const goalDist = Math.sqrt(dx * dx + dy * dy);
+
+  // Reached goal?
+  if (goalDist < TILE / 2) {
+    state.lives--;
+    sfxLifeLost();
+    toRemove.push(enemy.id);
+    return;
+  }
+
+  // Wanderer: bias toward goal but wander randomly
+  const goalAngle = Math.atan2(dy, dx);
+  // Randomly drift the wander angle, biased toward goal
+  enemy.wanderAngle += (Math.random() - 0.5) * 2.5 * dt;
+  // Blend: 60% goal direction, 40% wander
+  const angle = goalAngle * 0.6 + enemy.wanderAngle * 0.4;
+
+  const move = enemy.speed * TILE * dt;
+  let nx = enemy.x + Math.cos(angle) * move;
+  let ny = enemy.y + Math.sin(angle) * move;
+
+  // Clamp to grid bounds
+  const half = TILE / 2;
+  nx = Math.max(half, Math.min(COLS * TILE - half, nx));
+  ny = Math.max(half, Math.min(ROWS * TILE - half, ny));
+
+  // Check if destination cell is blocked
+  const destCol = Math.floor(nx / TILE);
+  const destRow = Math.floor(ny / TILE);
+  const destCell = state.grid.getCell(destCol, destRow);
+
+  if (destCell === CellType.Wall) {
+    // Attack the wall
+    const wall = state.walls.find((w) => w.col === destCol && w.row === destRow);
+    if (wall) {
+      wall.hp -= enemy.wallDps * dt;
+      if (wall.hp <= 0) {
+        sfxWallBreak();
+        destroyWall(state, wall);
+        for (const e of state.enemies) {
+          if (e.kind !== EnemyKind.Flyer) {
+            recalcEnemyPath(state, e);
+          }
+        }
+      }
+    }
+    // Bounce the wander angle
+    enemy.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+  } else if (destCell === CellType.Tower) {
+    // Attack the tower
+    const tower = state.towers.find((t) => t.col === destCol && t.row === destRow);
+    if (tower) {
+      tower.hp -= enemy.wallDps * dt;
+      if (tower.hp <= 0) {
+        destroyTower(state, tower);
+      }
+    }
+    enemy.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+  } else {
+    enemy.x = nx;
+    enemy.y = ny;
+  }
+}
+
 function destroyWall(state: GameState, wall: WallEntity): void {
   state.grid.setCell(wall.col, wall.row, CellType.Empty);
   state.walls = state.walls.filter((w) => w !== wall);
   recalcPath(state);
+}
+
+function destroyTower(state: GameState, tower: TowerEntity): void {
+  sfxWallBreak(); // reuse the crunch sound
+  state.grid.setCell(tower.col, tower.row, CellType.Empty);
+  state.towers = state.towers.filter((t) => t !== tower);
+  if (state.selectedTower === tower) state.selectedTower = null;
+  // Clear any enemies targeting this tower
+  for (const enemy of state.enemies) {
+    if (enemy.towerTarget === tower) {
+      enemy.towerTarget = null;
+    }
+  }
+  recalcPath(state);
+  for (const enemy of state.enemies) {
+    if (enemy.kind !== EnemyKind.Flyer) {
+      recalcEnemyPath(state, enemy);
+    }
+  }
 }
 
 function updateTowers(state: GameState, dt: number): void {
@@ -669,10 +818,24 @@ export class Game {
       if (inGrid) {
         this.state.hoverCol = col;
         this.state.hoverRow = row;
+        // Drag-to-place walls
+        if (this.state.mouseDown && this.state.selectedBuild === 'wall') {
+          placeBuild(this.state, col, row);
+        }
       } else {
         this.state.hoverCol = -1;
         this.state.hoverRow = -1;
       }
+    });
+
+    canvas.addEventListener('mousedown', () => {
+      this.state.mouseDown = true;
+    });
+    canvas.addEventListener('mouseup', () => {
+      this.state.mouseDown = false;
+    });
+    canvas.addEventListener('mouseleave', () => {
+      this.state.mouseDown = false;
     });
 
     canvas.addEventListener('click', (e) => {
