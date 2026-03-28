@@ -21,9 +21,13 @@ export interface WallEntity {
 
 export const MAX_UPGRADE = 3;
 
+export type UpgradeStat = 'range' | 'speed' | 'damage';
+
 // Cost multiplier per level: level 1 = 1x base, level 2 = 1.5x, level 3 = 2x
-export function upgradeCost(tower: TowerEntity, stat: 'range' | 'speed'): number {
-  const level = stat === 'range' ? tower.rangeLevel : tower.speedLevel;
+export function upgradeCost(tower: TowerEntity, stat: UpgradeStat): number {
+  const level = stat === 'range' ? tower.rangeLevel
+    : stat === 'speed' ? tower.speedLevel
+    : tower.damageLevel;
   if (level >= MAX_UPGRADE) return Infinity;
   const base = TOWER_DEFS[tower.kind].cost;
   return Math.round(base * (0.5 + level * 0.5));
@@ -39,6 +43,25 @@ export function towerFireRate(tower: TowerEntity): number {
   return base * Math.pow(0.75, tower.speedLevel);
 }
 
+export function towerDamage(tower: TowerEntity): number {
+  const base = TOWER_DEFS[tower.kind].damage;
+  return Math.round(base * (1 + tower.damageLevel * 0.35));
+}
+
+/** Total coins invested in a tower (base + all upgrades) */
+export function towerTotalInvested(tower: TowerEntity): number {
+  const base = TOWER_DEFS[tower.kind].cost;
+  let total = base;
+  for (let i = 0; i < tower.rangeLevel; i++) total += Math.round(base * (0.5 + i * 0.5));
+  for (let i = 0; i < tower.speedLevel; i++) total += Math.round(base * (0.5 + i * 0.5));
+  for (let i = 0; i < tower.damageLevel; i++) total += Math.round(base * (0.5 + i * 0.5));
+  return total;
+}
+
+export function sellValue(tower: TowerEntity): number {
+  return Math.floor(towerTotalInvested(tower) * 0.6);
+}
+
 export interface TowerEntity {
   col: number;
   row: number;
@@ -46,6 +69,7 @@ export interface TowerEntity {
   cooldown: number;
   rangeLevel: number;
   speedLevel: number;
+  damageLevel: number;
 }
 
 export interface EnemyEntity {
@@ -98,6 +122,7 @@ export interface GameState {
   hoverCol: number;
   hoverRow: number;
   autoStart: boolean;
+  gameSpeed: number;  // 1, 2, or 3
 
   // Path cache (recalculated on build)
   cachedPath: Position[] | null;
@@ -129,6 +154,7 @@ export function createGameState(): GameState {
     hoverCol: -1,
     hoverRow: -1,
     autoStart: false,
+    gameSpeed: 1,
     cachedPath: null,
     towerCostMap: buildTowerCostMap([]),
   };
@@ -141,17 +167,17 @@ function buildTowerCostMap(towers: TowerEntity[]): CostMap {
     Array.from({ length: COLS }, () => 0)
   );
   for (const tower of towers) {
-    const def = TOWER_DEFS[tower.kind];
-    const range = Math.ceil(def.range);
-    for (let dr = -range; dr <= range; dr++) {
-      for (let dc = -range; dc <= range; dc++) {
+    const effectiveRange = towerRange(tower);
+    const rangeInt = Math.ceil(effectiveRange);
+    for (let dr = -rangeInt; dr <= rangeInt; dr++) {
+      for (let dc = -rangeInt; dc <= rangeInt; dc++) {
         const r = tower.row + dr;
         const c = tower.col + dc;
         if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
         const dist = Math.sqrt(dc * dc + dr * dr);
-        if (dist <= def.range) {
+        if (dist <= effectiveRange) {
           // Higher cost closer to tower, scaled by tower damage
-          const dangerWeight = (1 - dist / def.range) * (def.damage / def.fireRate);
+          const dangerWeight = (1 - dist / towerRange(tower)) * (towerDamage(tower) / towerFireRate(tower));
           const row = map[r];
           if (row) row[c] = (row[c] ?? 0) + dangerWeight;
         }
@@ -182,7 +208,7 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
     if (state.coins < def.cost) return false;
     state.coins -= def.cost;
     state.grid.setCell(col, row, CellType.Tower);
-    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0 });
+    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0 });
   }
 
   recalcPath(state);
@@ -199,7 +225,7 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
 
 // ── Upgrades ──
 
-export function upgradeTower(state: GameState, tower: TowerEntity, stat: 'range' | 'speed'): boolean {
+export function upgradeTower(state: GameState, tower: TowerEntity, stat: UpgradeStat): boolean {
   const cost = upgradeCost(tower, stat);
   if (cost === Infinity || state.coins < cost) return false;
   state.coins -= cost;
@@ -212,10 +238,32 @@ export function upgradeTower(state: GameState, tower: TowerEntity, stat: 'range'
         recalcEnemyPath(state, enemy);
       }
     }
-  } else {
+  } else if (stat === 'speed') {
     tower.speedLevel++;
+  } else {
+    tower.damageLevel++;
+    // Recalc sneaker cost map since tower danger changed
+    recalcPath(state);
+    for (const enemy of state.enemies) {
+      if (enemy.kind === EnemyKind.Sneaker) {
+        recalcEnemyPath(state, enemy);
+      }
+    }
   }
   return true;
+}
+
+export function sellTower(state: GameState, tower: TowerEntity): void {
+  state.coins += sellValue(tower);
+  state.grid.setCell(tower.col, tower.row, CellType.Empty);
+  state.towers = state.towers.filter((t) => t !== tower);
+  state.selectedTower = null;
+  recalcPath(state);
+  for (const enemy of state.enemies) {
+    if (enemy.kind !== EnemyKind.Flyer) {
+      recalcEnemyPath(state, enemy);
+    }
+  }
 }
 
 // ── Wave management ──
@@ -480,7 +528,7 @@ function updateTowers(state: GameState, dt: number): void {
       tower.cooldown = towerFireRate(tower);
 
       // Calculate damage (with flyer bonus)
-      let damage = def.damage;
+      let damage = towerDamage(tower);
       if (nearest.kind === EnemyKind.Flyer) {
         damage = Math.round(damage * def.flyerBonus);
       }
@@ -583,7 +631,7 @@ export class Game {
   }
 
   private loop(time: number): void {
-    const dt = Math.min((time - this.lastTime) / 1000, 0.1); // cap dt to avoid spiral
+    const dt = Math.min((time - this.lastTime) / 1000, 0.1) * this.state.gameSpeed;
     this.lastTime = time;
 
     update(this.state, dt);
@@ -612,6 +660,13 @@ export class Game {
         return;
       }
 
+      // Check speed buttons
+      const spd = this.renderer.mouseToSpeedBtn(e);
+      if (spd > 0) {
+        this.state.gameSpeed = spd;
+        return;
+      }
+
       // Check auto-start checkbox
       if (this.renderer.mouseToAutoStart(e)) {
         this.state.autoStart = !this.state.autoStart;
@@ -624,8 +679,12 @@ export class Game {
         return;
       }
 
-      // If a tower is selected, check upgrade buttons
+      // If a tower is selected, check upgrade/sell buttons
       if (this.state.selectedTower) {
+        if (this.renderer.mouseToSellBtn(e)) {
+          sellTower(this.state, this.state.selectedTower);
+          return;
+        }
         const upgBtn = this.renderer.mouseToUpgradeBtn(e);
         if (upgBtn) {
           upgradeTower(this.state, this.state.selectedTower, upgBtn);

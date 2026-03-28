@@ -7,7 +7,7 @@ import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import { type GameState, upgradeCost, towerRange, towerFireRate, MAX_UPGRADE } from './game';
+import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -69,15 +69,43 @@ export class Renderer {
     return x >= CANVAS_W - 90 && x <= CANVAS_W - 10 && y >= 8 && y <= 34;
   }
 
-  /** Check if mouse clicks an upgrade button when a tower is selected. Returns 'range' | 'speed' | null */
-  mouseToUpgradeBtn(e: MouseEvent): 'range' | 'speed' | null {
+  /** Check if mouse clicks an upgrade button when a tower is selected */
+  mouseToUpgradeBtn(e: MouseEvent): UpgradeStat | null {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return null;
-    const btnW = 120;
-    if (x >= 10 && x < 10 + btnW) return 'range';
-    if (x >= 20 + btnW && x < 20 + btnW * 2) return 'speed';
+    const btnW = 90;
+    const gap = 6;
+    if (x >= gap && x < gap + btnW) return 'range';
+    if (x >= gap * 2 + btnW && x < gap * 2 + btnW * 2) return 'speed';
+    if (x >= gap * 3 + btnW * 2 && x < gap * 3 + btnW * 3) return 'damage';
     return null;
+  }
+
+  /** Check if mouse clicks the sell button */
+  mouseToSellBtn(e: MouseEvent): boolean {
+    const { x, y } = this.mouseToLogical(e);
+    const barY = HUD_TOP_H + CANVAS_H;
+    if (y < barY || y > barY + HUD_BOT_H) return false;
+    const btnW = 90;
+    const gap = 6;
+    const sellX = gap * 4 + btnW * 3;
+    return x >= sellX && x < sellX + 70;
+  }
+
+  /** Check if mouse clicks a speed button. Returns the speed (1,2,3) or 0 */
+  mouseToSpeedBtn(e: MouseEvent): number {
+    const { x, y } = this.mouseToLogical(e);
+    if (y < 8 || y > 34) return 0;
+    // Speed buttons: 1x, 2x, 3x — positioned left of auto checkbox
+    const startX = CANVAS_W - 280;
+    const btnW = 24;
+    const gap = 4;
+    for (let i = 0; i < 3; i++) {
+      const bx = startX + i * (btnW + gap);
+      if (x >= bx && x < bx + btnW) return i + 1;
+    }
+    return 0;
   }
 
   /** Check if mouse clicks the auto-start checkbox */
@@ -253,6 +281,20 @@ export class Renderer {
     ctx.fillText(`Coins: ${state.coins}`, 120, 26);
     ctx.fillText(`Wave: ${state.currentWave}/${state.totalWaves}`, 240, 26);
 
+    // Speed buttons
+    const speedStartX = CANVAS_W - 280;
+    const speedBtnW = 24;
+    const speedGap = 4;
+    for (let i = 0; i < 3; i++) {
+      const bx = speedStartX + i * (speedBtnW + speedGap);
+      const spd = i + 1;
+      ctx.fillStyle = state.gameSpeed === spd ? '#4caf50' : '#283593';
+      ctx.fillRect(bx, 10, speedBtnW, 20);
+      ctx.fillStyle = state.gameSpeed === spd ? '#fff' : '#aaa';
+      ctx.font = '10px monospace';
+      ctx.fillText(`${spd}x`, bx + 4, 24);
+    }
+
     // Auto-start checkbox
     const cbX = CANVAS_W - 178;
     const cbY = 14;
@@ -324,51 +366,54 @@ export class Renderer {
     const ctx = this.ctx;
     const tower = state.selectedTower!;
     const def = TOWER_DEFS[tower.kind];
-    const btnW = 120;
+    const btnW = 90;
+    const gap = 6;
 
-    // Tower name
-    ctx.fillStyle = '#eee';
-    ctx.font = '11px monospace';
+    const stats: { label: string; stat: UpgradeStat; level: number; pipColor: string }[] = [
+      { label: 'Range', stat: 'range', level: tower.rangeLevel, pipColor: '#4caf50' },
+      { label: 'Speed', stat: 'speed', level: tower.speedLevel, pipColor: '#2196f3' },
+      { label: 'Damage', stat: 'damage', level: tower.damageLevel, pipColor: '#f44336' },
+    ];
 
-    // Range upgrade button
-    const rangeCost = upgradeCost(tower, 'range');
-    const rangeMaxed = tower.rangeLevel >= MAX_UPGRADE;
-    const rangeAffordable = state.coins >= rangeCost;
-    ctx.fillStyle = rangeMaxed ? '#1b5e20' : rangeAffordable ? '#283593' : '#1a237e';
-    ctx.fillRect(10, barY + 4, btnW, HUD_BOT_H - 8);
-    ctx.fillStyle = rangeMaxed ? '#81c784' : rangeAffordable ? '#eee' : '#666';
-    ctx.font = '11px monospace';
-    ctx.fillText(rangeMaxed ? 'Range MAX' : 'Range +', 18, barY + 18);
-    ctx.font = '10px monospace';
-    if (!rangeMaxed) ctx.fillText(`$${rangeCost}`, 18, barY + 32);
-    // Level pips
-    for (let i = 0; i < MAX_UPGRADE; i++) {
-      ctx.fillStyle = i < tower.rangeLevel ? '#4caf50' : '#555';
-      ctx.fillRect(90 + i * 10, barY + 10, 7, 7);
+    for (let i = 0; i < stats.length; i++) {
+      const s = stats[i]!;
+      const x = gap + i * (btnW + gap);
+      const cost = upgradeCost(tower, s.stat);
+      const maxed = s.level >= MAX_UPGRADE;
+      const affordable = state.coins >= cost;
+
+      ctx.fillStyle = maxed ? '#1b5e20' : affordable ? '#283593' : '#1a237e';
+      ctx.fillRect(x, barY + 4, btnW, HUD_BOT_H - 8);
+      ctx.fillStyle = maxed ? '#81c784' : affordable ? '#eee' : '#666';
+      ctx.font = '11px monospace';
+      ctx.fillText(maxed ? `${s.label} MAX` : `${s.label} +`, x + 6, barY + 18);
+      ctx.font = '10px monospace';
+      if (!maxed) ctx.fillText(`$${cost}`, x + 6, barY + 32);
+      // Level pips
+      for (let j = 0; j < MAX_UPGRADE; j++) {
+        ctx.fillStyle = j < s.level ? s.pipColor : '#555';
+        ctx.fillRect(x + btnW - 30 + j * 10, barY + 8, 7, 7);
+      }
     }
 
-    // Speed upgrade button
-    const speedCost = upgradeCost(tower, 'speed');
-    const speedMaxed = tower.speedLevel >= MAX_UPGRADE;
-    const speedAffordable = state.coins >= speedCost;
-    ctx.fillStyle = speedMaxed ? '#1b5e20' : speedAffordable ? '#283593' : '#1a237e';
-    ctx.fillRect(20 + btnW, barY + 4, btnW, HUD_BOT_H - 8);
-    ctx.fillStyle = speedMaxed ? '#81c784' : speedAffordable ? '#eee' : '#666';
+    // Sell button
+    const sellX = gap * 4 + btnW * 3;
+    const sv = sellValue(tower);
+    ctx.fillStyle = '#b71c1c';
+    ctx.fillRect(sellX, barY + 4, 70, HUD_BOT_H - 8);
+    ctx.fillStyle = '#ffcdd2';
     ctx.font = '11px monospace';
-    ctx.fillText(speedMaxed ? 'Speed MAX' : 'Speed +', 28 + btnW, barY + 18);
+    ctx.fillText('Sell', sellX + 6, barY + 18);
     ctx.font = '10px monospace';
-    if (!speedMaxed) ctx.fillText(`$${speedCost}`, 28 + btnW, barY + 32);
-    for (let i = 0; i < MAX_UPGRADE; i++) {
-      ctx.fillStyle = i < tower.speedLevel ? '#2196f3' : '#555';
-      ctx.fillRect(100 + btnW + i * 10, barY + 10, 7, 7);
-    }
+    ctx.fillText(`+$${sv}`, sellX + 6, barY + 32);
 
     // Tower info
     ctx.fillStyle = '#aaa';
     ctx.font = '10px monospace';
     const range = towerRange(tower).toFixed(1);
     const rate = towerFireRate(tower).toFixed(2);
-    ctx.fillText(`${def.name}  rng:${range}  spd:${rate}s  dmg:${def.damage}`, 270, barY + 26);
+    const dmg = towerDamage(tower);
+    ctx.fillText(`${def.name}  rng:${range}  spd:${rate}s  dmg:${dmg}`, sellX + 80, barY + 26);
   }
 
   private drawOverlay(state: GameState): void {
