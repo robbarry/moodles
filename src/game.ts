@@ -343,8 +343,8 @@ export function placeBuild(state: GameState, col: number, row: number, owner: 'h
 
 export function upgradeTower(state: GameState, tower: TowerEntity, stat: UpgradeStat): boolean {
   const cost = upgradeCost(tower, stat);
-  if (cost === Infinity || state.coins < cost) return false;
-  state.coins -= cost;
+  if (cost === Infinity || getCoins(state, tower.owner) < cost) return false;
+  spendCoins(state, tower.owner, cost);
   if (stat === 'range') tower.rangeLevel++;
   else if (stat === 'speed') tower.speedLevel++;
   else tower.damageLevel++;
