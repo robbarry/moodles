@@ -128,28 +128,6 @@ export const walkerSprite = createSprite((ctx) => {
   ctx.fillRect(18, 28, 6, 4);
 });
 
-export const flyerSprite = createSprite((ctx) => {
-  // Body
-  ctx.fillStyle = '#ab47bc';
-  ctx.fillRect(10, 12, 12, 12);
-  // Wings
-  ctx.fillStyle = '#ce93d8';
-  ctx.fillRect(0, 10, 12, 6);
-  ctx.fillRect(20, 10, 12, 6);
-  ctx.fillRect(2, 8, 8, 4);
-  ctx.fillRect(22, 8, 8, 4);
-  // Eyes
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(12, 14, 3, 3);
-  ctx.fillRect(18, 14, 3, 3);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(13, 15, 1, 1);
-  ctx.fillRect(19, 15, 1, 1);
-  // Beak
-  ctx.fillStyle = '#fdd835';
-  ctx.fillRect(14, 20, 4, 3);
-});
-
 export const sneakerSprite = createSprite((ctx) => {
   // Body (sleek, lower profile than walker)
   ctx.fillStyle = '#00bcd4';
@@ -204,4 +182,4 @@ export const wandererSprite = createSprite((ctx) => {
 
 /** Map tower/enemy kinds to their sprites */
 export const TOWER_SPRITES = [peaShooterSprite, slopCannonSprite, zapperSprite];
-export const ENEMY_SPRITES = [walkerSprite, flyerSprite, sneakerSprite, wandererSprite];
+export const ENEMY_SPRITES = [walkerSprite, sneakerSprite, wandererSprite];

@@ -158,17 +158,17 @@ export class Renderer {
       }
     }
 
-    // ── Walls with HP bars ──
-    for (const wall of state.walls) {
-      const x = wall.col * TILE;
-      const y = wall.row * TILE;
-      if (wall.hp < wall.maxHp) {
-        const pct = wall.hp / wall.maxHp;
-        ctx.fillStyle = '#333';
-        ctx.fillRect(x + 2, y - 4, TILE - 4, 3);
-        ctx.fillStyle = pct > 0.5 ? '#4caf50' : pct > 0.25 ? '#ff9800' : '#f44336';
-        ctx.fillRect(x + 2, y - 4, (TILE - 4) * pct, 3);
+    // ── Path overlay ──
+    if (state.cachedPath && state.cachedPath.length > 1) {
+      ctx.globalAlpha = 0.2;
+      ctx.fillStyle = '#ffeb3b';
+      for (const p of state.cachedPath) {
+        // Don't draw on spawn/goal
+        const cell = state.grid.getCell(p.col, p.row);
+        if (cell === CellType.Spawn || cell === CellType.Goal) continue;
+        ctx.fillRect(p.col * TILE + 4, p.row * TILE + 4, TILE - 8, TILE - 8);
       }
+      ctx.globalAlpha = 1;
     }
 
     // ── Towers ──
@@ -177,15 +177,6 @@ export class Renderer {
       const y = tower.row * TILE;
       const sprite = TOWER_SPRITES[tower.kind];
       if (sprite) ctx.drawImage(sprite, x, y);
-
-      // Tower HP bar (only show when damaged)
-      if (tower.hp < tower.maxHp) {
-        const pct = tower.hp / tower.maxHp;
-        ctx.fillStyle = '#333';
-        ctx.fillRect(x + 2, y - 4, TILE - 4, 3);
-        ctx.fillStyle = pct > 0.5 ? '#2196f3' : pct > 0.25 ? '#ff9800' : '#f44336';
-        ctx.fillRect(x + 2, y - 4, (TILE - 4) * pct, 3);
-      }
 
       // Upgrade pips
       const totalLevels = tower.rangeLevel + tower.speedLevel + tower.damageLevel;
