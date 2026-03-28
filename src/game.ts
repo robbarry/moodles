@@ -1124,7 +1124,19 @@ export class Game {
       this.state.gameSpeed = msg.speed as number;
     } else if (cmd === 'autoStart') {
       this.state.autoStart = !this.state.autoStart;
+    } else if (cmd === 'restart') {
+      this.resetGame();
     }
+  }
+
+  private resetGame(): void {
+    const wasAudioInit = this.state.audioInitialized;
+    const wasMusic = this.state.musicOn;
+    this.state = createGameState();
+    this.state.audioInitialized = wasAudioInit;
+    this.state.musicOn = wasMusic;
+    recalcPath(this.state);
+    if (this.role === 'host') this.broadcastState();
   }
 
   private get localOwner(): 'host' | 'guest' | 'solo' {
@@ -1182,10 +1194,13 @@ export class Game {
         return;
       }
 
-      // Restart (host/solo only)
-      if (this.state.phase === GamePhase.Lost && !isGuest) {
-        this.state = createGameState();
-        recalcPath(this.state);
+      // Restart
+      if (this.state.phase === GamePhase.Lost) {
+        if (isGuest) {
+          this.sendCmd({ type: 'cmd', cmd: 'restart' });
+        } else {
+          this.resetGame();
+        }
         return;
       }
 
