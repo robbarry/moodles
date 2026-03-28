@@ -180,6 +180,127 @@ export const wandererSprite = createSprite((ctx) => {
   ctx.fillRect(18, 28, 6, 4);
 });
 
-/** Map tower/enemy kinds to their sprites */
-export const TOWER_SPRITES = [peaShooterSprite, slopCannonSprite, zapperSprite];
-export const ENEMY_SPRITES = [walkerSprite, sneakerSprite, wandererSprite];
+// ── New Towers ──
+
+export const frostSprite = createSprite((ctx) => {
+  // Base
+  ctx.fillStyle = '#00838f';
+  ctx.fillRect(4, 18, 24, 12);
+  // Crystal body
+  ctx.fillStyle = '#80deea';
+  ctx.fillRect(8, 4, 16, 18);
+  // Crystal tip (diamond shape)
+  ctx.fillStyle = '#b2ebf2';
+  ctx.fillRect(12, 0, 8, 6);
+  ctx.fillRect(14, -2, 4, 4);
+  // Ice sparkles
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(10, 8, 2, 2);
+  ctx.fillRect(20, 12, 2, 2);
+  ctx.fillRect(14, 14, 2, 2);
+});
+
+export const chainSprite = createSprite((ctx) => {
+  // Base
+  ctx.fillStyle = '#6a1b9a';
+  ctx.fillRect(4, 20, 24, 10);
+  // Coil body
+  ctx.fillStyle = '#ab47bc';
+  ctx.fillRect(10, 6, 12, 18);
+  // Lightning arcs
+  ctx.fillStyle = '#e1bee7';
+  ctx.fillRect(6, 8, 4, 2);
+  ctx.fillRect(22, 8, 4, 2);
+  ctx.fillRect(4, 14, 4, 2);
+  ctx.fillRect(24, 14, 4, 2);
+  // Top electrode
+  ctx.fillStyle = '#ce93d8';
+  ctx.fillRect(12, 2, 8, 6);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(14, 3, 4, 2);
+});
+
+export const coinTreeSprite = createSprite((ctx) => {
+  // Trunk
+  ctx.fillStyle = '#795548';
+  ctx.fillRect(13, 16, 6, 14);
+  // Canopy
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillRect(6, 4, 20, 14);
+  ctx.fillRect(8, 2, 16, 16);
+  // Coins on tree
+  ctx.fillStyle = '#ffab00';
+  ctx.fillRect(10, 6, 4, 4);
+  ctx.fillRect(18, 8, 4, 4);
+  ctx.fillRect(14, 12, 4, 4);
+  // Coin shine
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(11, 7, 1, 1);
+  ctx.fillRect(19, 9, 1, 1);
+});
+
+// ── New Enemies ──
+
+export const tankSprite = createSprite((ctx) => {
+  // Big armored body
+  ctx.fillStyle = '#546e7a';
+  ctx.fillRect(2, 6, 28, 22);
+  ctx.fillRect(4, 4, 24, 26);
+  // Armor plates
+  ctx.fillStyle = '#37474f';
+  ctx.fillRect(4, 8, 24, 3);
+  ctx.fillRect(4, 18, 24, 3);
+  // Visor
+  ctx.fillStyle = '#ff8a80';
+  ctx.fillRect(8, 12, 16, 4);
+  ctx.fillStyle = '#d50000';
+  ctx.fillRect(10, 13, 4, 2);
+  ctx.fillRect(18, 13, 4, 2);
+  // Treads
+  ctx.fillStyle = '#263238';
+  ctx.fillRect(2, 28, 10, 4);
+  ctx.fillRect(20, 28, 10, 4);
+});
+
+export const sprinterSprite = createSprite((ctx) => {
+  // Small streaky body
+  ctx.fillStyle = '#ffeb3b';
+  ctx.fillRect(10, 12, 12, 12);
+  ctx.fillRect(12, 10, 8, 16);
+  // Speed lines
+  ctx.fillStyle = '#fff9c4';
+  ctx.fillRect(2, 14, 6, 2);
+  ctx.fillRect(4, 18, 5, 2);
+  ctx.fillRect(3, 22, 6, 2);
+  // Eyes (determined)
+  ctx.fillStyle = '#000';
+  ctx.fillRect(14, 14, 3, 3);
+  ctx.fillRect(20, 14, 3, 3);
+  // Legs (in motion)
+  ctx.fillStyle = '#f9a825';
+  ctx.fillRect(10, 26, 4, 6);
+  ctx.fillRect(20, 24, 4, 6);
+});
+
+export const healerSprite = createSprite((ctx) => {
+  // Body
+  ctx.fillStyle = '#66bb6a';
+  ctx.fillRect(6, 8, 20, 18);
+  ctx.fillRect(8, 6, 16, 22);
+  // Cross symbol
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(14, 10, 4, 12);
+  ctx.fillRect(10, 14, 12, 4);
+  // Eyes (kind)
+  ctx.fillStyle = '#000';
+  ctx.fillRect(10, 22, 3, 2);
+  ctx.fillRect(19, 22, 3, 2);
+  // Feet
+  ctx.fillStyle = '#388e3c';
+  ctx.fillRect(8, 28, 6, 4);
+  ctx.fillRect(18, 28, 6, 4);
+});
+
+/** Map tower/enemy kinds to their sprites (must match enum order) */
+export const TOWER_SPRITES = [peaShooterSprite, slopCannonSprite, zapperSprite, frostSprite, chainSprite, coinTreeSprite];
+export const ENEMY_SPRITES = [walkerSprite, sneakerSprite, wandererSprite, tankSprite, sprinterSprite, healerSprite];

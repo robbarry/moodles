@@ -7,7 +7,7 @@ import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE } from './game';
+import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE, effects } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -57,9 +57,9 @@ export class Renderer {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return -1;
-    const btnW = 80;
+    const btnW = Math.floor(CANVAS_W / 7);
     const idx = Math.floor(x / btnW);
-    return idx >= 0 && idx < 4 ? idx : -1;
+    return idx >= 0 && idx < 7 ? idx : -1;
   }
 
   /** Check if mouse clicks the Start Wave button */
@@ -132,9 +132,10 @@ export class Renderer {
     // ── Top HUD ──
     this.drawHud(state);
 
-    // Translate for grid area
+    // Translate for grid area (with screen shake)
     ctx.save();
-    ctx.translate(0, HUD_TOP_H);
+    const shake = effects.getShakeOffset();
+    ctx.translate(shake.x, HUD_TOP_H + shake.y);
 
     // ── Grid background ──
     for (let r = 0; r < ROWS; r++) {
@@ -150,8 +151,17 @@ export class Renderer {
         // Cell contents
         if (cell === CellType.Spawn) {
           ctx.drawImage(spawnSprite, x, y);
+          // Pulse
+          ctx.globalAlpha = 0.15 + 0.1 * Math.sin(state.gameTime * 4);
+          ctx.fillStyle = '#a5d6a7';
+          ctx.fillRect(x, y, TILE, TILE);
+          ctx.globalAlpha = 1;
         } else if (cell === CellType.Goal) {
           ctx.drawImage(goalSprite, x, y);
+          ctx.globalAlpha = 0.15 + 0.1 * Math.sin(state.gameTime * 4);
+          ctx.fillStyle = '#ef9a9a';
+          ctx.fillRect(x, y, TILE, TILE);
+          ctx.globalAlpha = 1;
         } else if (cell === CellType.Wall) {
           ctx.drawImage(wallSprite, x, y);
         }
@@ -176,7 +186,18 @@ export class Renderer {
       const x = tower.col * TILE;
       const y = tower.row * TILE;
       const sprite = TOWER_SPRITES[tower.kind];
-      if (sprite) ctx.drawImage(sprite, x, y);
+      if (sprite) {
+        if (tower.recoilTimer > 0) {
+          const s = 1 + 0.15 * (tower.recoilTimer / 0.08);
+          ctx.save();
+          ctx.translate(x + TILE / 2, y + TILE / 2);
+          ctx.scale(s, s);
+          ctx.drawImage(sprite, -TILE / 2, -TILE / 2);
+          ctx.restore();
+        } else {
+          ctx.drawImage(sprite, x, y);
+        }
+      }
 
       // Upgrade pips
       const totalLevels = tower.rangeLevel + tower.speedLevel + tower.damageLevel;
@@ -235,6 +256,22 @@ export class Renderer {
       const sprite = ENEMY_SPRITES[enemy.kind];
       if (sprite) ctx.drawImage(sprite, x, y);
 
+      // Hit flash (white overlay)
+      if (enemy.hitFlashTimer > 0) {
+        ctx.globalAlpha = enemy.hitFlashTimer / 0.1;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(x, y, TILE, TILE);
+        ctx.globalAlpha = 1;
+      }
+
+      // Slow tint (cyan overlay)
+      if (enemy.slowTimer > 0) {
+        ctx.globalAlpha = 0.2;
+        ctx.fillStyle = '#80deea';
+        ctx.fillRect(x, y, TILE, TILE);
+        ctx.globalAlpha = 1;
+      }
+
       // Health bar
       const pct = enemy.hp / enemy.maxHp;
       const barW = TILE - 4;
@@ -244,6 +281,19 @@ export class Renderer {
       ctx.fillRect(x + 2, y - 5, barW * pct, 3);
     }
 
+    // ── Projectile trails ──
+    for (const proj of state.projectiles) {
+      for (let i = 0; i < proj.trail.length; i++) {
+        const t = proj.trail[i]!;
+        ctx.globalAlpha = (i + 1) / (proj.trail.length + 1) * 0.4;
+        ctx.fillStyle = proj.color;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     // ── Projectiles ──
     for (const proj of state.projectiles) {
       ctx.fillStyle = proj.color;
@@ -251,6 +301,41 @@ export class Renderer {
       ctx.arc(proj.x, proj.y, 3, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // ── Chain arcs ──
+    for (const arc of effects.chainArcs) {
+      ctx.strokeStyle = arc.color;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = arc.life / 0.15;
+      ctx.beginPath();
+      ctx.moveTo(arc.x1, arc.y1);
+      // Jagged lightning effect
+      const mx = (arc.x1 + arc.x2) / 2 + (Math.random() - 0.5) * 10;
+      const my = (arc.y1 + arc.y2) / 2 + (Math.random() - 0.5) * 10;
+      ctx.lineTo(mx, my);
+      ctx.lineTo(arc.x2, arc.y2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // ── Particles ──
+    for (const p of effects.particles) {
+      ctx.globalAlpha = p.life / p.maxLife;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+
+    // ── Rings ──
+    for (const r of effects.rings) {
+      ctx.globalAlpha = r.life / r.maxLife * 0.6;
+      ctx.strokeStyle = r.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
 
     // ── Floating damage numbers ──
     for (const dmg of state.floatingDamage) {
@@ -267,10 +352,24 @@ export class Renderer {
     this.drawBuildBar(state);
 
     // ── Overlays ──
-    if (state.phase === GamePhase.Won || state.phase === GamePhase.Lost) {
+    if (state.phase === GamePhase.Lost) {
       this.drawOverlay(state);
     } else if (state.waveCountdown > 0) {
       this.drawCountdown(state);
+    }
+
+    // ── Notifications ──
+    for (let i = 0; i < state.notifications.length; i++) {
+      const n = state.notifications[i]!;
+      ctx.globalAlpha = Math.min(1, n.timer);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      const ny = HUD_TOP_H + 40 + i * 30;
+      ctx.fillRect(CANVAS_W / 2 - 120, ny, 240, 24);
+      ctx.fillStyle = '#ffeb3b';
+      ctx.font = 'bold 12px monospace';
+      const nw = ctx.measureText(n.text).width;
+      ctx.fillText(n.text, (CANVAS_W - nw) / 2, ny + 16);
+      ctx.globalAlpha = 1;
     }
 
     ctx.restore(); // un-scale
@@ -283,9 +382,12 @@ export class Renderer {
 
     ctx.fillStyle = '#eee';
     ctx.font = '14px monospace';
-    ctx.fillText(`Lives: ${state.lives}`, 12, 26);
-    ctx.fillText(`Coins: ${state.coins}`, 120, 26);
-    ctx.fillText(`Wave: ${state.currentWave}/${state.totalWaves}`, 240, 26);
+    ctx.fillStyle = Math.round(state.displayLives) < state.lives ? '#4caf50' : Math.round(state.displayLives) > state.lives ? '#f44336' : '#eee';
+    ctx.fillText(`Lives: ${Math.round(state.displayLives)}`, 12, 26);
+    ctx.fillStyle = Math.round(state.displayCoins) < state.coins ? '#4caf50' : Math.round(state.displayCoins) > state.coins ? '#f44336' : '#eee';
+    ctx.fillText(`Coins: ${Math.round(state.displayCoins)}`, 120, 26);
+    ctx.fillText(`Wave: ${state.currentWave}`, 240, 26);
+    ctx.fillText(`Score: ${state.score}`, 340, 26);
 
     // Music toggle
     const mX = CANVAS_W - 308;
@@ -353,14 +455,20 @@ export class Renderer {
       return;
     }
 
+    const allTowerKinds: TowerKind[] = [
+      TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
+      TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree,
+    ];
     const items: { label: string; cost: number; key: 'wall' | TowerKind }[] = [
       { label: 'Wall', cost: WALL_COST, key: 'wall' as const },
-      { label: 'Pea', cost: TOWER_DEFS[TowerKind.PeaShooter].cost, key: TowerKind.PeaShooter },
-      { label: 'Slop', cost: TOWER_DEFS[TowerKind.SlopCannon].cost, key: TowerKind.SlopCannon },
-      { label: 'Zap', cost: TOWER_DEFS[TowerKind.Zapper].cost, key: TowerKind.Zapper },
+      ...allTowerKinds.map((k) => ({
+        label: TOWER_DEFS[k].shortName,
+        cost: TOWER_DEFS[k].cost,
+        key: k,
+      })),
     ];
 
-    const btnW = 80;
+    const btnW = Math.floor(CANVAS_W / 7);
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
       const x = i * btnW;
@@ -443,17 +551,28 @@ export class Renderer {
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
     ctx.fillRect(0, 0, CANVAS_W, TOTAL_H);
 
-    ctx.fillStyle = state.phase === GamePhase.Won ? '#4caf50' : '#f44336';
+    ctx.fillStyle = '#f44336';
     ctx.font = 'bold 32px monospace';
-    const text = state.phase === GamePhase.Won ? 'YOU WIN!' : 'GAME OVER';
+    const text = 'GAME OVER';
     const tw = ctx.measureText(text).width;
-    ctx.fillText(text, (CANVAS_W - tw) / 2, TOTAL_H / 2 - 10);
+    ctx.fillText(text, (CANVAS_W - tw) / 2, TOTAL_H / 2 - 30);
 
     ctx.fillStyle = '#eee';
     ctx.font = '14px monospace';
+    const waveTxt = `Wave ${state.currentWave}  Score: ${state.score}`;
+    const ww = ctx.measureText(waveTxt).width;
+    ctx.fillText(waveTxt, (CANVAS_W - ww) / 2, TOTAL_H / 2);
+
+    ctx.fillStyle = '#aaa';
+    ctx.font = '12px monospace';
+    const hiTxt = `High Score: ${state.highScore}`;
+    const hw = ctx.measureText(hiTxt).width;
+    ctx.fillText(hiTxt, (CANVAS_W - hw) / 2, TOTAL_H / 2 + 18);
+
+    ctx.fillStyle = '#eee';
     const sub = 'Click to restart';
     const sw = ctx.measureText(sub).width;
-    ctx.fillText(sub, (CANVAS_W - sw) / 2, TOTAL_H / 2 + 20);
+    ctx.fillText(sub, (CANVAS_W - sw) / 2, TOTAL_H / 2 + 38);
   }
 
   private drawCountdown(state: GameState): void {

@@ -29,23 +29,36 @@ export enum TowerKind {
   PeaShooter,
   SlopCannon,
   Zapper,
+  Frost,
+  Chain,
+  CoinTree,
 }
 
 export interface TowerDef {
   kind: TowerKind;
   name: string;
+  shortName: string;
   cost: number;
   damage: number;
   fireRate: number;   // seconds between shots
   range: number;      // in tiles
   splash: number;     // splash radius in tiles (0 = single target)
   color: string;
+  // Frost
+  slowFactor?: number;
+  slowDuration?: number;
+  // Chain
+  bounces?: number;
+  bounceRange?: number;
+  // CoinTree
+  incomePerWave?: number;
 }
 
 export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
   [TowerKind.PeaShooter]: {
     kind: TowerKind.PeaShooter,
     name: 'Pea Shooter',
+    shortName: 'Pea',
     cost: 15,
     damage: 10,
     fireRate: 0.5,
@@ -56,6 +69,7 @@ export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
   [TowerKind.SlopCannon]: {
     kind: TowerKind.SlopCannon,
     name: 'Slop Cannon',
+    shortName: 'Slop',
     cost: 30,
     damage: 25,
     fireRate: 1.5,
@@ -66,12 +80,51 @@ export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
   [TowerKind.Zapper]: {
     kind: TowerKind.Zapper,
     name: 'Zapper',
+    shortName: 'Zap',
     cost: 40,
     damage: 15,
     fireRate: 1.0,
     range: 5,
     splash: 0,
     color: '#2196f3',
+  },
+  [TowerKind.Frost]: {
+    kind: TowerKind.Frost,
+    name: 'Frost Tower',
+    shortName: 'Frost',
+    cost: 35,
+    damage: 3,
+    fireRate: 1.0,
+    range: 2.5,
+    splash: 0,
+    color: '#80deea',
+    slowFactor: 0.4,
+    slowDuration: 2.0,
+  },
+  [TowerKind.Chain]: {
+    kind: TowerKind.Chain,
+    name: 'Chain Tower',
+    shortName: 'Chain',
+    cost: 50,
+    damage: 12,
+    fireRate: 1.2,
+    range: 3.5,
+    splash: 0,
+    color: '#ab47bc',
+    bounces: 2,
+    bounceRange: 2,
+  },
+  [TowerKind.CoinTree]: {
+    kind: TowerKind.CoinTree,
+    name: 'Coin Tree',
+    shortName: 'Coin',
+    cost: 60,
+    damage: 0,
+    fireRate: 0,
+    range: 0,
+    splash: 0,
+    color: '#ffd54f',
+    incomePerWave: 8,
   },
 };
 
@@ -81,6 +134,9 @@ export enum EnemyKind {
   Walker,
   Sneaker,
   Wanderer,
+  Tank,
+  Sprinter,
+  Healer,
 }
 
 export interface EnemyDef {
@@ -117,6 +173,30 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     reward: 6,
     color: '#ff5722',
   },
+  [EnemyKind.Tank]: {
+    kind: EnemyKind.Tank,
+    name: 'Tank',
+    baseHp: 300,
+    speed: 0.4,
+    reward: 20,
+    color: '#546e7a',
+  },
+  [EnemyKind.Sprinter]: {
+    kind: EnemyKind.Sprinter,
+    name: 'Sprinter',
+    baseHp: 20,
+    speed: 2.5,
+    reward: 3,
+    color: '#ffeb3b',
+  },
+  [EnemyKind.Healer]: {
+    kind: EnemyKind.Healer,
+    name: 'Healer',
+    baseHp: 60,
+    speed: 0.8,
+    reward: 12,
+    color: '#66bb6a',
+  },
 };
 
 // ── Economy ──
@@ -131,7 +211,6 @@ export const WAVE_BONUS = 10;
 export enum GamePhase {
   Build,
   Wave,
-  Won,
   Lost,
 }
 
@@ -143,4 +222,6 @@ export interface Projectile {
   splash: number;
   speed: number;       // pixels per second
   color: string;
+  sourceKind?: TowerKind;
+  trail: { x: number; y: number }[];
 }

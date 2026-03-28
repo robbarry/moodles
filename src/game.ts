@@ -7,13 +7,15 @@ import {
 } from './types';
 import { Grid } from './grid';
 import { findPath, CostMap } from './pathfinding';
-import { WAVES } from './wave';
+import { WAVES, generateEndlessWave } from './wave';
 import { Renderer } from './renderer';
 import {
   sfxShoot, sfxSlopShoot, sfxZapShoot, sfxPlace, sfxSell, sfxUpgrade,
   sfxEnemyDeath, sfxWaveStart, sfxLifeLost, sfxWin, sfxLose,
+  sfxFrostHit, sfxChainBounce, sfxCoinIncome, sfxHealPulse,
   startMusic, toggleMusic,
 } from './audio';
+import { Effects } from './effects';
 
 // ── Entity types ──
 
@@ -73,6 +75,7 @@ export interface TowerEntity {
   rangeLevel: number;
   speedLevel: number;
   damageLevel: number;
+  recoilTimer: number;
 }
 
 export interface EnemyEntity {
@@ -87,6 +90,10 @@ export interface EnemyEntity {
   pathIndex: number;
   reward: number;
   wanderAngle: number;
+  hitFlashTimer: number;
+  slowTimer: number;
+  speedMultiplier: number;
+  healCooldown: number;
 }
 
 export interface FloatingDamage {
@@ -111,7 +118,6 @@ export interface GameState {
   lives: number;
   phase: GamePhase;
   currentWave: number;
-  totalWaves: number;
   waveCountdown: number;
 
   // Spawning state
@@ -124,22 +130,44 @@ export interface GameState {
   hoverCol: number;
   hoverRow: number;
   autoStart: boolean;
-  gameSpeed: number;  // 1, 2, or 3
+  gameSpeed: number;
   musicOn: boolean;
   audioInitialized: boolean;
   mouseDown: boolean;
 
-  // Path cache (recalculated on build)
+  // Path cache
   cachedPath: Position[] | null;
-
-  // Set of path cells that can't be blocked (placing here would kill the only route)
   lockedPathCells: Set<string>;
-
-  // Cost map for sneaker tower avoidance
   towerCostMap: CostMap;
+
+  // Juice
+  gameTime: number;
+  displayCoins: number;
+  displayLives: number;
+
+  // Scoring
+  score: number;
+  enemiesKilled: number;
+  coinsEarned: number;
+  highScore: number;
+  isEndless: boolean;
+  notifications: { text: string; timer: number }[];
 }
 
 let nextEnemyId = 0;
+
+const HIGH_SCORE_KEY = 'moodles_high_score';
+
+function getHighScore(): number {
+  try { return parseInt(localStorage.getItem(HIGH_SCORE_KEY) || '0', 10); } catch { return 0; }
+}
+
+function saveHighScore(score: number): void {
+  try {
+    const prev = getHighScore();
+    if (score > prev) localStorage.setItem(HIGH_SCORE_KEY, score.toString());
+  } catch { /* localStorage unavailable */ }
+}
 
 export function createGameState(): GameState {
   return {
@@ -153,7 +181,6 @@ export function createGameState(): GameState {
     lives: STARTING_LIVES,
     phase: GamePhase.Build,
     currentWave: 1,
-    totalWaves: WAVES.length,
     waveCountdown: 0,
     spawnQueue: [],
     spawnTimer: 0,
@@ -169,6 +196,15 @@ export function createGameState(): GameState {
     cachedPath: null,
     lockedPathCells: new Set(),
     towerCostMap: buildTowerCostMap([]),
+    gameTime: 0,
+    displayCoins: STARTING_COINS,
+    displayLives: STARTING_LIVES,
+    score: 0,
+    enemiesKilled: 0,
+    coinsEarned: 0,
+    highScore: getHighScore(),
+    isEndless: false,
+    notifications: [],
   };
 }
 
@@ -247,7 +283,7 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
   if (state.selectedBuild === 'wall') {
     state.walls.push({ col, row });
   } else {
-    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0 });
+    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, recoilTimer: 0 });
   }
 
   recalcPath(state);
@@ -299,8 +335,9 @@ export function sellTower(state: GameState, tower: TowerEntity): void {
 
 export function startWave(state: GameState): void {
   if (state.phase !== GamePhase.Build) return;
-  const waveDef = WAVES[state.currentWave - 1];
-  if (!waveDef) return;
+  const waveDef = state.currentWave <= WAVES.length
+    ? WAVES[state.currentWave - 1]!
+    : generateEndlessWave(state.currentWave);
 
   state.spawnQueue = [];
   for (const entry of waveDef.entries) {
@@ -336,6 +373,10 @@ function spawnEnemy(state: GameState, kind: EnemyKind, hpMult: number): void {
     pathIndex: 0,
     reward: def.reward,
     wanderAngle: Math.random() * Math.PI * 2,
+    hitFlashTimer: 0,
+    slowTimer: 0,
+    speedMultiplier: 1,
+    healCooldown: 0,
   };
 
   if (kind !== EnemyKind.Wanderer) {
@@ -364,7 +405,20 @@ function recalcEnemyPath(state: GameState, enemy: EnemyEntity): void {
 // ── Update loop ──
 
 export function update(state: GameState, dt: number): void {
-  if (state.phase === GamePhase.Won || state.phase === GamePhase.Lost) return;
+  state.gameTime += dt;
+
+  // Smooth counter lerp
+  const lerpRate = 200 * dt;
+  state.displayCoins += Math.sign(state.coins - state.displayCoins) * Math.min(Math.abs(state.coins - state.displayCoins), lerpRate);
+  state.displayLives += Math.sign(state.lives - state.displayLives) * Math.min(Math.abs(state.lives - state.displayLives), lerpRate * 0.5);
+
+  // Notifications
+  state.notifications = state.notifications.filter((n) => {
+    n.timer -= dt;
+    return n.timer > 0;
+  });
+
+  if (state.phase === GamePhase.Lost) return;
 
   // Wave countdown
   if (state.waveCountdown > 0) {
@@ -406,16 +460,34 @@ export function update(state: GameState, dt: number): void {
     state.spawnQueue.length === 0 &&
     state.enemies.length === 0
   ) {
-    if (state.currentWave >= state.totalWaves) {
-      state.phase = GamePhase.Won;
-      sfxWin();
-    } else {
-      state.coins += WAVE_BONUS;
-      state.currentWave++;
-      state.phase = GamePhase.Build;
-      if (state.autoStart) {
-        startWave(state);
+    state.coins += WAVE_BONUS;
+    state.coinsEarned += WAVE_BONUS;
+    state.score += state.currentWave * (state.isEndless ? 50 : 0) + 100;
+
+    // Coin Tree income
+    let hasCoinTree = false;
+    for (const tower of state.towers) {
+      if (tower.kind === TowerKind.CoinTree) {
+        hasCoinTree = true;
+        const def = TOWER_DEFS[TowerKind.CoinTree];
+        const income = (def.incomePerWave ?? 8) * (1 + tower.damageLevel);
+        state.coins += income;
+        state.coinsEarned += income;
       }
+    }
+    if (hasCoinTree) sfxCoinIncome();
+
+    // Milestone at wave 10
+    if (state.currentWave === 10 && !state.isEndless) {
+      state.isEndless = true;
+      state.notifications.push({ text: 'Endless mode begins!', timer: 3 });
+      sfxWin();
+    }
+
+    state.currentWave++;
+    state.phase = GamePhase.Build;
+    if (state.autoStart) {
+      startWave(state);
     }
   }
 
@@ -423,6 +495,7 @@ export function update(state: GameState, dt: number): void {
   if (state.lives <= 0) {
     state.lives = 0;
     state.phase = GamePhase.Lost;
+    saveHighScore(state.score);
     sfxLose();
   }
 }
@@ -431,15 +504,40 @@ function updateEnemies(state: GameState, dt: number): void {
   const toRemove: number[] = [];
 
   for (const enemy of state.enemies) {
+    // Decay timers
+    if (enemy.hitFlashTimer > 0) enemy.hitFlashTimer -= dt;
+    if (enemy.slowTimer > 0) {
+      enemy.slowTimer -= dt;
+      if (enemy.slowTimer <= 0) enemy.speedMultiplier = 1;
+    }
+
+    // Healer: heal nearby enemies
+    if (enemy.kind === EnemyKind.Healer) {
+      enemy.healCooldown -= dt;
+      if (enemy.healCooldown <= 0) {
+        enemy.healCooldown = 1.5;
+        for (const other of state.enemies) {
+          if (other.id === enemy.id) continue;
+          const edx = other.x - enemy.x;
+          const edy = other.y - enemy.y;
+          if (Math.sqrt(edx * edx + edy * edy) <= 2 * TILE) {
+            other.hp = Math.min(other.maxHp, other.hp + 5);
+          }
+        }
+        sfxHealPulse();
+      }
+    }
+
     if (enemy.kind === EnemyKind.Wanderer) {
       updateWanderer(state, enemy, dt, toRemove);
     } else {
-      // Walker/Sneaker — follow the path
+      // All path-followers (Walker, Sneaker, Tank, Sprinter, Healer)
       if (enemy.path.length > 0) {
         const target = enemy.path[enemy.pathIndex];
         if (!target) {
           state.lives--;
           sfxLifeLost();
+          effects.triggerShake(5, 0.15);
           toRemove.push(enemy.id);
           continue;
         }
@@ -455,11 +553,12 @@ function updateEnemies(state: GameState, dt: number): void {
           if (enemy.pathIndex >= enemy.path.length) {
             state.lives--;
             sfxLifeLost();
+            effects.triggerShake(5, 0.15);
             toRemove.push(enemy.id);
             continue;
           }
         } else {
-          const move = enemy.speed * TILE * dt;
+          const move = enemy.speed * enemy.speedMultiplier * TILE * dt;
           enemy.x += (dx / dist) * move;
           enemy.y += (dy / dist) * move;
         }
@@ -506,7 +605,7 @@ function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemo
   enemy.wanderAngle += angleDiff * goalBias * dt;
 
   const angle = enemy.wanderAngle;
-  const move = enemy.speed * TILE * dt;
+  const move = enemy.speed * enemy.speedMultiplier * TILE * dt;
   let nx = enemy.x + Math.cos(angle) * move;
   let ny = enemy.y + Math.sin(angle) * move;
 
@@ -532,6 +631,12 @@ function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemo
 
 function updateTowers(state: GameState, dt: number): void {
   for (const tower of state.towers) {
+    // Decay recoil
+    if (tower.recoilTimer > 0) tower.recoilTimer -= dt;
+
+    // CoinTree doesn't fire
+    if (tower.kind === TowerKind.CoinTree) continue;
+
     tower.cooldown -= dt;
     if (tower.cooldown > 0) continue;
 
@@ -556,10 +661,13 @@ function updateTowers(state: GameState, dt: number): void {
 
     if (nearest) {
       tower.cooldown = towerFireRate(tower);
+      tower.recoilTimer = 0.08;
 
       // Shoot sfx
       if (tower.kind === TowerKind.SlopCannon) sfxSlopShoot();
       else if (tower.kind === TowerKind.Zapper) sfxZapShoot();
+      else if (tower.kind === TowerKind.Frost) sfxFrostHit();
+      else if (tower.kind === TowerKind.Chain) sfxChainBounce();
       else sfxShoot();
 
       const damage = towerDamage(tower);
@@ -572,6 +680,8 @@ function updateTowers(state: GameState, dt: number): void {
         splash: def.splash,
         speed: 300,
         color: def.color,
+        sourceKind: tower.kind,
+        trail: [],
       });
     }
   }
@@ -589,14 +699,18 @@ function updateProjectiles(state: GameState, dt: number): void {
       continue;
     }
 
+    // Trail
+    proj.trail.push({ x: proj.x, y: proj.y });
+    if (proj.trail.length > 5) proj.trail.shift();
+
     const dx = target.x - proj.x;
     const dy = target.y - proj.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     if (dist < 6) {
       // Hit!
+      let splashCount = 0;
       if (proj.splash > 0) {
-        // Splash damage
         const splashPixels = proj.splash * TILE;
         for (const enemy of state.enemies) {
           const edx = enemy.x - target.x;
@@ -604,11 +718,55 @@ function updateProjectiles(state: GameState, dt: number): void {
           const edist = Math.sqrt(edx * edx + edy * edy);
           if (edist <= splashPixels) {
             damageEnemy(state, enemy, proj.damage);
+            splashCount++;
           }
         }
+        if (splashCount >= 3) effects.triggerShake(3, 0.1);
       } else {
         damageEnemy(state, target, proj.damage);
       }
+
+      // Frost: apply slow
+      if (proj.sourceKind === TowerKind.Frost) {
+        const frostDef = TOWER_DEFS[TowerKind.Frost];
+        // Don't stack, just refresh
+        target.slowTimer = frostDef.slowDuration ?? 2;
+        target.speedMultiplier = frostDef.slowFactor ?? 0.4;
+      }
+
+      // Chain: bounce to nearby enemies
+      if (proj.sourceKind === TowerKind.Chain) {
+        const chainDef = TOWER_DEFS[TowerKind.Chain];
+        const maxBounces = chainDef.bounces ?? 2;
+        const bounceRangePixels = (chainDef.bounceRange ?? 2) * TILE;
+        let lastX = target.x;
+        let lastY = target.y;
+        let bounceDamage = proj.damage;
+        const hitIds = new Set<number>([target.id]);
+
+        for (let b = 0; b < maxBounces; b++) {
+          bounceDamage = Math.round(bounceDamage * 0.7);
+          let closest: EnemyEntity | null = null;
+          let closestDist = Infinity;
+          for (const enemy of state.enemies) {
+            if (hitIds.has(enemy.id)) continue;
+            const edx = enemy.x - lastX;
+            const edy = enemy.y - lastY;
+            const edist = Math.sqrt(edx * edx + edy * edy);
+            if (edist <= bounceRangePixels && edist < closestDist) {
+              closest = enemy;
+              closestDist = edist;
+            }
+          }
+          if (!closest) break;
+          hitIds.add(closest.id);
+          effects.spawnChainArc(lastX, lastY, closest.x, closest.y, chainDef.color);
+          damageEnemy(state, closest, bounceDamage);
+          lastX = closest.x;
+          lastY = closest.y;
+        }
+      }
+
       toRemove.push(i);
     } else {
       const move = proj.speed * dt;
@@ -617,7 +775,6 @@ function updateProjectiles(state: GameState, dt: number): void {
     }
   }
 
-  // Remove hit projectiles (reverse order to preserve indices)
   for (let i = toRemove.length - 1; i >= 0; i--) {
     state.projectiles.splice(toRemove[i]!, 1);
   }
@@ -625,6 +782,9 @@ function updateProjectiles(state: GameState, dt: number): void {
 
 function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void {
   enemy.hp -= damage;
+  enemy.hitFlashTimer = 0.1;
+
+  effects.spawnHitParticles(enemy.x, enemy.y, ENEMY_DEFS[enemy.kind].color);
 
   state.floatingDamage.push({
     x: enemy.x,
@@ -636,14 +796,20 @@ function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void
 
   if (enemy.hp <= 0) {
     state.coins += enemy.reward;
+    state.coinsEarned += enemy.reward;
+    state.enemiesKilled++;
+    state.score += 10;
     sfxEnemyDeath();
+    effects.spawnDeathEffect(enemy.x, enemy.y, ENEMY_DEFS[enemy.kind].color);
+    effects.triggerShake(1, 0.05);
     state.enemies = state.enemies.filter((e) => e.id !== enemy.id);
-    // Also remove projectiles targeting this enemy
     state.projectiles = state.projectiles.filter((p) => p.targetId !== enemy.id);
   }
 }
 
 // ── Main game controller ──
+
+export const effects = new Effects();
 
 export class Game {
   state: GameState;
@@ -667,6 +833,7 @@ export class Game {
     this.lastTime = time;
 
     update(this.state, dt);
+    effects.update(dt);
     this.renderer.draw(this.state);
 
     requestAnimationFrame((t) => this.loop(t));
@@ -713,7 +880,7 @@ export class Game {
       }
 
       // Check for restart on game-over/win
-      if (this.state.phase === GamePhase.Won || this.state.phase === GamePhase.Lost) {
+      if (this.state.phase === GamePhase.Lost) {
         this.state = createGameState();
         recalcPath(this.state);
         return;
@@ -757,6 +924,7 @@ export class Game {
         if (btnIdx >= 0) {
           const builds: ('wall' | TowerKind)[] = [
             'wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
+            TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree,
           ];
           const clicked = builds[btnIdx];
           if (clicked !== undefined) {
@@ -801,11 +969,14 @@ export class Game {
         this.state.selectedTower = null;
       }
       // Hotkeys
-      if (e.key >= '1' && e.key <= '4') this.state.selectedTower = null;
+      if (e.key >= '1' && e.key <= '7') this.state.selectedTower = null;
       if (e.key === '1') this.state.selectedBuild = 'wall';
       if (e.key === '2') this.state.selectedBuild = TowerKind.PeaShooter;
       if (e.key === '3') this.state.selectedBuild = TowerKind.SlopCannon;
       if (e.key === '4') this.state.selectedBuild = TowerKind.Zapper;
+      if (e.key === '5') this.state.selectedBuild = TowerKind.Frost;
+      if (e.key === '6') this.state.selectedBuild = TowerKind.Chain;
+      if (e.key === '7') this.state.selectedBuild = TowerKind.CoinTree;
       if (e.key === ' ') {
         e.preventDefault();
         startWave(this.state);

@@ -129,6 +129,30 @@ export function sfxLose() {
   });
 }
 
+// ── New content SFX ──
+
+export function sfxFrostHit() {
+  playTone(2000, 0.1, 'sine', 0.3, 3000);
+  playTone(2500, 0.08, 'sine', 0.2, 4000);
+}
+
+export function sfxChainBounce() {
+  playTone(1200, 0.06, 'square', 0.3, 800);
+  setTimeout(() => playTone(1000, 0.06, 'square', 0.25, 600), 50);
+  setTimeout(() => playTone(800, 0.06, 'square', 0.2, 400), 100);
+}
+
+export function sfxCoinIncome() {
+  playTone(1000, 0.06, 'triangle', 0.4, 1500);
+  setTimeout(() => playTone(1200, 0.06, 'triangle', 0.3, 1800), 60);
+  setTimeout(() => playTone(1500, 0.08, 'triangle', 0.3, 2000), 120);
+}
+
+export function sfxHealPulse() {
+  playTone(600, 0.15, 'sine', 0.2, 800);
+  playTone(800, 0.1, 'sine', 0.15, 1000);
+}
+
 // ── Music: multi-section chiptune with percussion ──
 //
 // Structure: A → A → B → B → C → C → A → bridge → repeat
