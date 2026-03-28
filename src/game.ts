@@ -77,6 +77,7 @@ export interface TowerEntity {
   speedLevel: number;
   damageLevel: number;
   recoilTimer: number;
+  owner: 'host' | 'guest' | 'solo';
 }
 
 export interface EnemyEntity {
@@ -115,7 +116,9 @@ export interface GameState {
   projectiles: Projectile[];
   floatingDamage: FloatingDamage[];
 
-  coins: number;
+  coins: number;       // solo mode coins (also used as "current player" view)
+  hostCoins: number;
+  guestCoins: number;
   lives: number;
   phase: GamePhase;
   currentWave: number;
@@ -183,6 +186,8 @@ export function createGameState(): GameState {
     projectiles: [],
     floatingDamage: [],
     coins: STARTING_COINS,
+    hostCoins: STARTING_COINS,
+    guestCoins: STARTING_COINS,
     lives: STARTING_LIVES,
     phase: GamePhase.Build,
     currentWave: 1,
@@ -268,29 +273,57 @@ function computeLockedCells(state: GameState): void {
   }
 }
 
-export function placeBuild(state: GameState, col: number, row: number): boolean {
+/** Get the coin balance for a given owner */
+export function getCoins(state: GameState, owner: 'host' | 'guest' | 'solo'): number {
+  if (owner === 'host') return state.hostCoins;
+  if (owner === 'guest') return state.guestCoins;
+  return state.coins;
+}
+
+function addCoins(state: GameState, owner: 'host' | 'guest' | 'solo', amount: number): void {
+  if (owner === 'host') state.hostCoins += amount;
+  else if (owner === 'guest') state.guestCoins += amount;
+  else state.coins += amount;
+  state.coinsEarned += amount;
+}
+
+function spendCoins(state: GameState, owner: 'host' | 'guest' | 'solo', amount: number): void {
+  if (owner === 'host') state.hostCoins -= amount;
+  else if (owner === 'guest') state.guestCoins -= amount;
+  else state.coins -= amount;
+}
+
+/** Check if placement would block the path */
+export function canPlaceAt(state: GameState, col: number, row: number): boolean {
+  if (!state.grid.canPlace(col, row)) return false;
+  state.grid.setCell(col, row, CellType.Wall);
+  const testPath = findPath(state.grid, state.grid.spawn, state.grid.goal);
+  state.grid.setCell(col, row, CellType.Empty);
+  return testPath !== null;
+}
+
+export function placeBuild(state: GameState, col: number, row: number, owner: 'host' | 'guest' | 'solo' = 'solo'): boolean {
   if (!state.grid.canPlace(col, row)) return false;
   if (state.selectedBuild === null) return false;
 
   const cost = state.selectedBuild === 'wall' ? WALL_COST : TOWER_DEFS[state.selectedBuild].cost;
-  if (state.coins < cost) return false;
+  if (getCoins(state, owner) < cost) return false;
 
   // Tentatively place and check if a path still exists
   const cellType = state.selectedBuild === 'wall' ? CellType.Wall : CellType.Tower;
   state.grid.setCell(col, row, cellType);
   const testPath = findPath(state.grid, state.grid.spawn, state.grid.goal);
   if (!testPath) {
-    // Would block the path — reject
     state.grid.setCell(col, row, CellType.Empty);
     return false;
   }
 
   // Commit the placement
-  state.coins -= cost;
+  spendCoins(state, owner, cost);
   if (state.selectedBuild === 'wall') {
     state.walls.push({ col, row });
   } else {
-    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, recoilTimer: 0 });
+    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, recoilTimer: 0, owner });
   }
 
   recalcPath(state);
@@ -326,7 +359,7 @@ export function upgradeTower(state: GameState, tower: TowerEntity, stat: Upgrade
 
 export function sellTower(state: GameState, tower: TowerEntity): void {
   sfxSell();
-  state.coins += sellValue(tower);
+  addCoins(state, tower.owner, sellValue(tower));
   state.grid.setCell(tower.col, tower.row, CellType.Empty);
   state.towers = state.towers.filter((t) => t !== tower);
   state.selectedTower = null;
@@ -467,19 +500,21 @@ export function update(state: GameState, dt: number): void {
     state.spawnQueue.length === 0 &&
     state.enemies.length === 0
   ) {
+    // Wave bonus: both players get it in co-op
     state.coins += WAVE_BONUS;
+    state.hostCoins += WAVE_BONUS;
+    state.guestCoins += WAVE_BONUS;
     state.coinsEarned += WAVE_BONUS;
     state.score += state.currentWave * (state.isEndless ? 50 : 0) + 100;
 
-    // Coin Tree income
+    // Coin Tree income goes to the tower owner
     let hasCoinTree = false;
     for (const tower of state.towers) {
       if (tower.kind === TowerKind.CoinTree) {
         hasCoinTree = true;
         const def = TOWER_DEFS[TowerKind.CoinTree];
         const income = (def.incomePerWave ?? 8) * (1 + tower.damageLevel);
-        state.coins += income;
-        state.coinsEarned += income;
+        addCoins(state, tower.owner, income);
       }
     }
     if (hasCoinTree) sfxCoinIncome();
@@ -688,6 +723,7 @@ function updateTowers(state: GameState, dt: number): void {
         speed: 300,
         color: def.color,
         sourceKind: tower.kind,
+        sourceOwner: tower.owner,
         trail: [],
       });
     }
@@ -724,13 +760,13 @@ function updateProjectiles(state: GameState, dt: number): void {
           const edy = enemy.y - target.y;
           const edist = Math.sqrt(edx * edx + edy * edy);
           if (edist <= splashPixels) {
-            damageEnemy(state, enemy, proj.damage);
+            damageEnemy(state, enemy, proj.damage, proj.sourceOwner);
             splashCount++;
           }
         }
         if (splashCount >= 3) effects.triggerShake(3, 0.1);
       } else {
-        damageEnemy(state, target, proj.damage);
+        damageEnemy(state, target, proj.damage, proj.sourceOwner);
       }
 
       // Frost: apply slow
@@ -768,7 +804,7 @@ function updateProjectiles(state: GameState, dt: number): void {
           if (!closest) break;
           hitIds.add(closest.id);
           effects.spawnChainArc(lastX, lastY, closest.x, closest.y, chainDef.color);
-          damageEnemy(state, closest, bounceDamage);
+          damageEnemy(state, closest, bounceDamage, proj.sourceOwner);
           lastX = closest.x;
           lastY = closest.y;
         }
@@ -787,7 +823,7 @@ function updateProjectiles(state: GameState, dt: number): void {
   }
 }
 
-function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void {
+function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number, killer: 'host' | 'guest' | 'solo' = 'solo'): void {
   enemy.hp -= damage;
   enemy.hitFlashTimer = 0.1;
 
@@ -802,8 +838,7 @@ function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void
   });
 
   if (enemy.hp <= 0) {
-    state.coins += enemy.reward;
-    state.coinsEarned += enemy.reward;
+    addCoins(state, killer, enemy.reward);
     state.enemiesKilled++;
     state.score += 10;
     sfxEnemyDeath();
@@ -829,6 +864,8 @@ interface SerializedState {
   projectiles: Projectile[];
   floatingDamage: FloatingDamage[];
   coins: number;
+  hostCoins: number;
+  guestCoins: number;
   lives: number;
   phase: GamePhase;
   currentWave: number;
@@ -857,6 +894,8 @@ function serializeState(state: GameState): SerializedState {
     projectiles: state.projectiles,
     floatingDamage: state.floatingDamage,
     coins: state.coins,
+    hostCoins: state.hostCoins,
+    guestCoins: state.guestCoins,
     lives: state.lives,
     phase: state.phase,
     currentWave: state.currentWave,
@@ -893,6 +932,8 @@ function applySerializedState(state: GameState, s: SerializedState): void {
   state.projectiles = s.projectiles;
   state.floatingDamage = s.floatingDamage;
   state.coins = s.coins;
+  state.hostCoins = s.hostCoins;
+  state.guestCoins = s.guestCoins;
   state.lives = s.lives;
   state.phase = s.phase;
   state.currentWave = s.currentWave;
@@ -954,6 +995,9 @@ export class Game {
       update(this.state, dt);
     }
     effects.update(dt);
+    // Set coins to the current player's balance for HUD display
+    if (this.role === 'host') this.state.coins = this.state.hostCoins;
+    else if (this.role === 'guest') this.state.coins = this.state.guestCoins;
     this.renderer.draw(this.state);
 
     // Host: broadcast state at ~15fps
@@ -1000,7 +1044,7 @@ export class Game {
     if (cmd === 'place') {
       const prev = this.state.selectedBuild;
       this.state.selectedBuild = msg.build as 'wall' | TowerKind;
-      placeBuild(this.state, msg.col as number, msg.row as number);
+      placeBuild(this.state, msg.col as number, msg.row as number, 'guest');
       this.state.selectedBuild = prev;
     } else if (cmd === 'startWave') {
       startWave(this.state);
@@ -1045,7 +1089,7 @@ export class Game {
           if (isGuest) {
             this.sendCmd({ type: 'cmd', cmd: 'place', build: 'wall', col, row });
           } else {
-            placeBuild(this.state, col, row);
+            placeBuild(this.state, col, row, this.role === 'host' ? 'host' : 'solo');
           }
         }
       } else {
@@ -1167,7 +1211,7 @@ export class Game {
           if (isGuest) {
             this.sendCmd({ type: 'cmd', cmd: 'place', build: this.state.selectedBuild, col, row });
           } else {
-            placeBuild(this.state, col, row);
+            placeBuild(this.state, col, row, this.role === 'host' ? 'host' : 'solo');
           }
         }
       }

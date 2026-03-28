@@ -7,7 +7,7 @@ import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE, effects } from './game';
+import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE, effects, canPlaceAt } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -57,7 +57,7 @@ export class Renderer {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return -1;
-    const btnW = Math.floor(CANVAS_W / 7);
+    const btnW = CANVAS_W / 7;
     const idx = Math.floor(x / btnW);
     return idx >= 0 && idx < 7 ? idx : -1;
   }
@@ -230,7 +230,7 @@ export class Renderer {
     if (state.hoverCol >= 0 && state.hoverRow >= 0 && state.selectedBuild !== null) {
       const x = state.hoverCol * TILE;
       const y = state.hoverRow * TILE;
-      const canPlace = state.grid.canPlace(state.hoverCol, state.hoverRow);
+      const canPlace = canPlaceAt(state, state.hoverCol, state.hoverRow);
       ctx.globalAlpha = 0.5;
       ctx.fillStyle = canPlace ? '#4caf50' : '#f44336';
       ctx.fillRect(x, y, TILE, TILE);
@@ -285,13 +285,14 @@ export class Renderer {
         ctx.globalAlpha = 1;
       }
 
-      // Health bar
+      // Health bar (clamped inside grid area)
       const pct = enemy.hp / enemy.maxHp;
       const barW = TILE - 4;
+      const barY = Math.max(1, y - 5);
       ctx.fillStyle = '#333';
-      ctx.fillRect(x + 2, y - 5, barW, 3);
+      ctx.fillRect(x + 2, barY, barW, 3);
       ctx.fillStyle = pct > 0.5 ? '#4caf50' : pct > 0.25 ? '#ff9800' : '#f44336';
-      ctx.fillRect(x + 2, y - 5, barW * pct, 3);
+      ctx.fillRect(x + 2, barY, barW * pct, 3);
     }
 
     // ── Projectile trails ──
@@ -393,14 +394,14 @@ export class Renderer {
     ctx.fillStyle = '#16213e';
     ctx.fillRect(0, 0, CANVAS_W, HUD_TOP_H);
 
-    ctx.fillStyle = '#eee';
-    ctx.font = '14px monospace';
+    ctx.font = '11px monospace';
     ctx.fillStyle = Math.round(state.displayLives) < state.lives ? '#4caf50' : Math.round(state.displayLives) > state.lives ? '#f44336' : '#eee';
-    ctx.fillText(`Lives: ${Math.round(state.displayLives)}`, 12, 26);
+    ctx.fillText(`HP:${Math.round(state.displayLives)}`, 8, 26);
     ctx.fillStyle = Math.round(state.displayCoins) < state.coins ? '#4caf50' : Math.round(state.displayCoins) > state.coins ? '#f44336' : '#eee';
-    ctx.fillText(`Coins: ${Math.round(state.displayCoins)}`, 120, 26);
-    ctx.fillText(`Wave: ${state.currentWave}`, 240, 26);
-    ctx.fillText(`Score: ${state.score}`, 340, 26);
+    ctx.fillText(`$${Math.round(state.displayCoins)}`, 60, 26);
+    ctx.fillStyle = '#eee';
+    ctx.fillText(`W${state.currentWave}`, 120, 26);
+    ctx.fillText(`${state.score}pts`, 160, 26);
 
     // Music toggle
     const mX = CANVAS_W - 308;
@@ -481,7 +482,7 @@ export class Renderer {
       })),
     ];
 
-    const btnW = Math.floor(CANVAS_W / 7);
+    const btnW = CANVAS_W / 7;
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
       const x = i * btnW;

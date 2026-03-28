@@ -223,5 +223,6 @@ export interface Projectile {
   speed: number;       // pixels per second
   color: string;
   sourceKind?: TowerKind;
+  sourceOwner?: 'host' | 'guest' | 'solo';
   trail: { x: number; y: number }[];
 }

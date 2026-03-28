@@ -192,7 +192,7 @@ export const frostSprite = createSprite((ctx) => {
   // Crystal tip (diamond shape)
   ctx.fillStyle = '#b2ebf2';
   ctx.fillRect(12, 0, 8, 6);
-  ctx.fillRect(14, -2, 4, 4);
+  ctx.fillRect(14, 0, 4, 2);
   // Ice sparkles
   ctx.fillStyle = '#fff';
   ctx.fillRect(10, 8, 2, 2);
