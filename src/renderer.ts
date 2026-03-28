@@ -7,7 +7,7 @@ import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import type { GameState } from './game';
+import { type GameState, upgradeCost, towerRange, towerFireRate, MAX_UPGRADE } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -67,6 +67,17 @@ export class Renderer {
     const { x, y } = this.mouseToLogical(e);
     // Start button is in the top bar, right side
     return x >= CANVAS_W - 90 && x <= CANVAS_W - 10 && y >= 8 && y <= 34;
+  }
+
+  /** Check if mouse clicks an upgrade button when a tower is selected. Returns 'range' | 'speed' | null */
+  mouseToUpgradeBtn(e: MouseEvent): 'range' | 'speed' | null {
+    const { x, y } = this.mouseToLogical(e);
+    const barY = HUD_TOP_H + CANVAS_H;
+    if (y < barY || y > barY + HUD_BOT_H) return null;
+    const btnW = 120;
+    if (x >= 10 && x < 10 + btnW) return 'range';
+    if (x >= 20 + btnW && x < 20 + btnW * 2) return 'speed';
+    return null;
   }
 
   /** Check if mouse clicks the auto-start checkbox */
@@ -132,6 +143,32 @@ export class Renderer {
       const y = tower.row * TILE;
       const sprite = TOWER_SPRITES[tower.kind];
       if (sprite) ctx.drawImage(sprite, x, y);
+
+      // Upgrade pips
+      const totalLevels = tower.rangeLevel + tower.speedLevel;
+      if (totalLevels > 0) {
+        for (let i = 0; i < totalLevels; i++) {
+          ctx.fillStyle = '#ffeb3b';
+          ctx.fillRect(x + 2 + i * 4, y + TILE - 4, 3, 3);
+        }
+      }
+    }
+
+    // ── Selected tower highlight ──
+    if (state.selectedTower) {
+      const t = state.selectedTower;
+      const x = t.col * TILE;
+      const y = t.row * TILE;
+      ctx.strokeStyle = '#7c4dff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, TILE, TILE);
+      // Range circle
+      const cx = x + TILE / 2;
+      const cy = y + TILE / 2;
+      ctx.strokeStyle = 'rgba(124,77,255,0.4)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, towerRange(t) * TILE, 0, Math.PI * 2);
+      ctx.stroke();
     }
 
     // ── Hover / selection preview ──
@@ -246,6 +283,12 @@ export class Renderer {
     ctx.fillStyle = '#16213e';
     ctx.fillRect(0, barY, CANVAS_W, HUD_BOT_H);
 
+    // If a tower is selected, show upgrade UI instead
+    if (state.selectedTower) {
+      this.drawUpgradeBar(state, barY);
+      return;
+    }
+
     const items: { label: string; cost: number; key: 'wall' | TowerKind }[] = [
       { label: 'Wall', cost: 5, key: 'wall' },
       { label: 'Pea', cost: 15, key: TowerKind.PeaShooter },
@@ -275,6 +318,57 @@ export class Renderer {
         ctx.strokeRect(x + 2, barY + 4, btnW - 4, HUD_BOT_H - 8);
       }
     }
+  }
+
+  private drawUpgradeBar(state: GameState, barY: number): void {
+    const ctx = this.ctx;
+    const tower = state.selectedTower!;
+    const def = TOWER_DEFS[tower.kind];
+    const btnW = 120;
+
+    // Tower name
+    ctx.fillStyle = '#eee';
+    ctx.font = '11px monospace';
+
+    // Range upgrade button
+    const rangeCost = upgradeCost(tower, 'range');
+    const rangeMaxed = tower.rangeLevel >= MAX_UPGRADE;
+    const rangeAffordable = state.coins >= rangeCost;
+    ctx.fillStyle = rangeMaxed ? '#1b5e20' : rangeAffordable ? '#283593' : '#1a237e';
+    ctx.fillRect(10, barY + 4, btnW, HUD_BOT_H - 8);
+    ctx.fillStyle = rangeMaxed ? '#81c784' : rangeAffordable ? '#eee' : '#666';
+    ctx.font = '11px monospace';
+    ctx.fillText(rangeMaxed ? 'Range MAX' : 'Range +', 18, barY + 18);
+    ctx.font = '10px monospace';
+    if (!rangeMaxed) ctx.fillText(`$${rangeCost}`, 18, barY + 32);
+    // Level pips
+    for (let i = 0; i < MAX_UPGRADE; i++) {
+      ctx.fillStyle = i < tower.rangeLevel ? '#4caf50' : '#555';
+      ctx.fillRect(90 + i * 10, barY + 10, 7, 7);
+    }
+
+    // Speed upgrade button
+    const speedCost = upgradeCost(tower, 'speed');
+    const speedMaxed = tower.speedLevel >= MAX_UPGRADE;
+    const speedAffordable = state.coins >= speedCost;
+    ctx.fillStyle = speedMaxed ? '#1b5e20' : speedAffordable ? '#283593' : '#1a237e';
+    ctx.fillRect(20 + btnW, barY + 4, btnW, HUD_BOT_H - 8);
+    ctx.fillStyle = speedMaxed ? '#81c784' : speedAffordable ? '#eee' : '#666';
+    ctx.font = '11px monospace';
+    ctx.fillText(speedMaxed ? 'Speed MAX' : 'Speed +', 28 + btnW, barY + 18);
+    ctx.font = '10px monospace';
+    if (!speedMaxed) ctx.fillText(`$${speedCost}`, 28 + btnW, barY + 32);
+    for (let i = 0; i < MAX_UPGRADE; i++) {
+      ctx.fillStyle = i < tower.speedLevel ? '#2196f3' : '#555';
+      ctx.fillRect(100 + btnW + i * 10, barY + 10, 7, 7);
+    }
+
+    // Tower info
+    ctx.fillStyle = '#aaa';
+    ctx.font = '10px monospace';
+    const range = towerRange(tower).toFixed(1);
+    const rate = towerFireRate(tower).toFixed(2);
+    ctx.fillText(`${def.name}  rng:${range}  spd:${rate}s  dmg:${def.damage}`, 270, barY + 26);
   }
 
   private drawOverlay(state: GameState): void {

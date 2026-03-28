@@ -19,11 +19,33 @@ export interface WallEntity {
   maxHp: number;
 }
 
+export const MAX_UPGRADE = 3;
+
+// Cost multiplier per level: level 1 = 1x base, level 2 = 1.5x, level 3 = 2x
+export function upgradeCost(tower: TowerEntity, stat: 'range' | 'speed'): number {
+  const level = stat === 'range' ? tower.rangeLevel : tower.speedLevel;
+  if (level >= MAX_UPGRADE) return Infinity;
+  const base = TOWER_DEFS[tower.kind].cost;
+  return Math.round(base * (0.5 + level * 0.5));
+}
+
+export function towerRange(tower: TowerEntity): number {
+  const base = TOWER_DEFS[tower.kind].range;
+  return base + tower.rangeLevel * 0.6;
+}
+
+export function towerFireRate(tower: TowerEntity): number {
+  const base = TOWER_DEFS[tower.kind].fireRate;
+  return base * Math.pow(0.75, tower.speedLevel);
+}
+
 export interface TowerEntity {
   col: number;
   row: number;
   kind: TowerKind;
   cooldown: number;
+  rangeLevel: number;
+  speedLevel: number;
 }
 
 export interface EnemyEntity {
@@ -72,6 +94,7 @@ export interface GameState {
 
   // UI state
   selectedBuild: 'wall' | TowerKind | null;
+  selectedTower: TowerEntity | null;
   hoverCol: number;
   hoverRow: number;
   autoStart: boolean;
@@ -102,6 +125,7 @@ export function createGameState(): GameState {
     spawnQueue: [],
     spawnTimer: 0,
     selectedBuild: null,
+    selectedTower: null,
     hoverCol: -1,
     hoverRow: -1,
     autoStart: false,
@@ -158,7 +182,7 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
     if (state.coins < def.cost) return false;
     state.coins -= def.cost;
     state.grid.setCell(col, row, CellType.Tower);
-    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0 });
+    state.towers.push({ col, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0 });
   }
 
   recalcPath(state);
@@ -170,6 +194,27 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
     }
   }
 
+  return true;
+}
+
+// ── Upgrades ──
+
+export function upgradeTower(state: GameState, tower: TowerEntity, stat: 'range' | 'speed'): boolean {
+  const cost = upgradeCost(tower, stat);
+  if (cost === Infinity || state.coins < cost) return false;
+  state.coins -= cost;
+  if (stat === 'range') {
+    tower.rangeLevel++;
+    // Recalc sneaker cost map since tower range changed
+    recalcPath(state);
+    for (const enemy of state.enemies) {
+      if (enemy.kind === EnemyKind.Sneaker) {
+        recalcEnemyPath(state, enemy);
+      }
+    }
+  } else {
+    tower.speedLevel++;
+  }
   return true;
 }
 
@@ -415,7 +460,7 @@ function updateTowers(state: GameState, dt: number): void {
     const def = TOWER_DEFS[tower.kind];
     const cx = tower.col * TILE + TILE / 2;
     const cy = tower.row * TILE + TILE / 2;
-    const rangePixels = def.range * TILE;
+    const rangePixels = towerRange(tower) * TILE;
 
     // Find nearest enemy in range
     let nearest: EnemyEntity | null = null;
@@ -432,7 +477,7 @@ function updateTowers(state: GameState, dt: number): void {
     }
 
     if (nearest) {
-      tower.cooldown = def.fireRate;
+      tower.cooldown = towerFireRate(tower);
 
       // Calculate damage (with flyer bonus)
       let damage = def.damage;
@@ -579,36 +624,66 @@ export class Game {
         return;
       }
 
-      // Check build bar buttons
-      const btnIdx = this.renderer.mouseToButton(e);
-      if (btnIdx >= 0) {
-        const builds: ('wall' | TowerKind)[] = [
-          'wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
-        ];
-        const clicked = builds[btnIdx];
-        if (clicked !== undefined) {
-          this.state.selectedBuild = this.state.selectedBuild === clicked ? null : clicked;
+      // If a tower is selected, check upgrade buttons
+      if (this.state.selectedTower) {
+        const upgBtn = this.renderer.mouseToUpgradeBtn(e);
+        if (upgBtn) {
+          upgradeTower(this.state, this.state.selectedTower, upgBtn);
+          return;
         }
-        return;
       }
 
-      // Place on grid
+      // Check build bar buttons (only when no tower selected)
+      if (!this.state.selectedTower) {
+        const btnIdx = this.renderer.mouseToButton(e);
+        if (btnIdx >= 0) {
+          const builds: ('wall' | TowerKind)[] = [
+            'wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
+          ];
+          const clicked = builds[btnIdx];
+          if (clicked !== undefined) {
+            this.state.selectedBuild = this.state.selectedBuild === clicked ? null : clicked;
+          }
+          return;
+        }
+      }
+
+      // Click on grid
       const { col, row, inGrid } = this.renderer.mouseToGrid(e);
-      if (inGrid && this.state.selectedBuild !== null) {
-        placeBuild(this.state, col, row);
+      if (inGrid) {
+        // Check if clicking an existing tower
+        const clickedTower = this.state.towers.find((t) => t.col === col && t.row === row);
+        if (clickedTower) {
+          this.state.selectedTower = this.state.selectedTower === clickedTower ? null : clickedTower;
+          this.state.selectedBuild = null;
+          return;
+        }
+
+        // Deselect tower when clicking elsewhere on grid
+        if (this.state.selectedTower) {
+          this.state.selectedTower = null;
+        }
+
+        // Place on grid
+        if (this.state.selectedBuild !== null) {
+          placeBuild(this.state, col, row);
+        }
       }
     });
 
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.state.selectedBuild = null;
+      this.state.selectedTower = null;
     });
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         this.state.selectedBuild = null;
+        this.state.selectedTower = null;
       }
       // Hotkeys
+      if (e.key >= '1' && e.key <= '4') this.state.selectedTower = null;
       if (e.key === '1') this.state.selectedBuild = 'wall';
       if (e.key === '2') this.state.selectedBuild = TowerKind.PeaShooter;
       if (e.key === '3') this.state.selectedBuild = TowerKind.SlopCannon;
