@@ -986,20 +986,11 @@ export class Game {
     requestAnimationFrame((t) => this.loop(t));
 
     if (this.role === 'host') {
-      // Run simulation + broadcast on setInterval so it continues even
-      // when the browser throttles rAF for background/unfocused tabs
-      setInterval(() => {
-        const now = performance.now();
-        const dt = Math.min((now - this.lastSimTime) / 1000, 0.1) * this.state.gameSpeed;
-        this.lastSimTime = now;
-        update(this.state, dt);
-        effects.update(dt);
-        this.broadcastState();
-      }, 100); // 10fps simulation + broadcast
-      this.lastSimTime = performance.now();
+      // Broadcast on setInterval so it runs even when rAF is throttled
+      // for background tabs. Simulation stays in rAF for smooth 60fps.
+      setInterval(() => this.broadcastState(), 100);
     }
   }
-  private lastSimTime = 0;
 
   /** Send current state to the guest */
   private broadcastState(): void {
@@ -1016,8 +1007,7 @@ export class Game {
     const dt = Math.min((time - this.lastTime) / 1000, 0.1) * this.state.gameSpeed;
     this.lastTime = time;
 
-    // Solo: simulate in rAF. Host: simulation runs in setInterval.
-    if (this.role === 'solo') {
+    if (this.role !== 'guest') {
       update(this.state, dt);
       effects.update(dt);
     }
