@@ -1014,7 +1014,16 @@ export class Game {
 
     // Set coins for HUD display
     if (this.role === 'host') this.state.coins = this.state.hostCoins;
-    else if (this.role === 'guest') this.state.coins = this.state.guestCoins;
+    else if (this.role === 'guest') {
+      this.state.coins = this.state.guestCoins;
+      // Guest needs its own display lerp since update() doesn't run
+      this.state.gameTime += dt;
+      const lerpRate = 200 * dt;
+      this.state.displayCoins += Math.sign(this.state.coins - this.state.displayCoins) * Math.min(Math.abs(this.state.coins - this.state.displayCoins), lerpRate);
+      this.state.displayLives += Math.sign(this.state.lives - this.state.displayLives) * Math.min(Math.abs(this.state.lives - this.state.displayLives), lerpRate * 0.5);
+      // Tick notifications
+      this.state.notifications = this.state.notifications.filter((n) => { n.timer -= dt; return n.timer > 0; });
+    }
 
     this.renderer.draw(this.state);
     requestAnimationFrame((t) => this.loop(t));
