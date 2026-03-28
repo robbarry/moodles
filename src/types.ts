@@ -154,7 +154,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Walker',
     baseHp: 50,
     speed: 1.0,
-    reward: 5,
+    reward: 2,
     color: '#e53935',
   },
   [EnemyKind.Sneaker]: {
@@ -162,7 +162,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Sneaker',
     baseHp: 40,
     speed: 1.2,
-    reward: 7,
+    reward: 3,
     color: '#00bcd4',
   },
   [EnemyKind.Wanderer]: {
@@ -170,7 +170,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Wanderer',
     baseHp: 80,
     speed: 0.9,
-    reward: 6,
+    reward: 3,
     color: '#ff5722',
   },
   [EnemyKind.Tank]: {
@@ -178,7 +178,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Tank',
     baseHp: 300,
     speed: 0.4,
-    reward: 20,
+    reward: 10,
     color: '#546e7a',
   },
   [EnemyKind.Sprinter]: {
@@ -186,7 +186,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Sprinter',
     baseHp: 20,
     speed: 2.5,
-    reward: 3,
+    reward: 1,
     color: '#ffeb3b',
   },
   [EnemyKind.Healer]: {
@@ -194,7 +194,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Healer',
     baseHp: 60,
     speed: 0.8,
-    reward: 12,
+    reward: 6,
     color: '#66bb6a',
   },
 };
@@ -204,7 +204,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
 export const STARTING_COINS = 50;
 export const STARTING_LIVES = 10;
 export const WALL_COST = 3;
-export const WAVE_BONUS = 10;
+export const WAVE_BONUS = 5;
 
 // ── Game state ──
 
