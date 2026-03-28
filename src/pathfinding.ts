@@ -87,25 +87,75 @@ export function findPath(grid: Grid, start: Position, goal: Position, costMap?: 
 }
 
 /**
- * Find the wall cell closest to `from` that, if removed, would most likely
- * open a path. Simple heuristic: find the nearest wall by manhattan distance.
+ * Find the best obstacle to attack to open a path to the goal.
+ * Runs A* treating walls/towers as passable but very expensive.
+ * Returns the first wall or tower cell on that path — the obstacle
+ * that, if removed, most directly opens a route.
+ * Also returns whether it's a wall or tower cell.
  */
-export function findNearestWall(grid: Grid, from: Position): Position | null {
-  let best: Position | null = null;
-  let bestDist = Infinity;
+export function findBestObstacleToAttack(
+  grid: Grid, from: Position, goal: Position
+): { pos: Position; type: CellType } | null {
+  // A* where walls/towers cost 100 instead of being impassable
+  const OBSTACLE_COST = 100;
+  const openSet = new Map<string, Node>();
+  const closedSet = new Set<string>();
 
-  for (let r = 0; r < grid.cells.length; r++) {
-    const row = grid.cells[r]!;
-    for (let c = 0; c < row.length; c++) {
-      if (row[c] === CellType.Wall) {
-        const dist = Math.abs(c - from.col) + Math.abs(r - from.row);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = { col: c, row: r };
+  const startNode: Node = {
+    pos: from,
+    g: 0,
+    h: heuristic(from, goal),
+    f: heuristic(from, goal),
+    parent: null,
+  };
+  openSet.set(posKey(from), startNode);
+
+  while (openSet.size > 0) {
+    let current: Node | null = null;
+    for (const node of openSet.values()) {
+      if (!current || node.f < current.f) {
+        current = node;
+      }
+    }
+    if (!current) break;
+
+    if (current.pos.col === goal.col && current.pos.row === goal.row) {
+      // Walk the path and find the first obstacle
+      const path: Position[] = [];
+      let n: Node | null = current;
+      while (n) {
+        path.unshift(n.pos);
+        n = n.parent;
+      }
+      for (const p of path) {
+        const cell = grid.getCell(p.col, p.row);
+        if (cell === CellType.Wall || cell === CellType.Tower) {
+          return { pos: p, type: cell };
         }
+      }
+      return null;
+    }
+
+    const currentKey = posKey(current.pos);
+    openSet.delete(currentKey);
+    closedSet.add(currentKey);
+
+    for (const neighbor of grid.getNeighbors(current.pos)) {
+      const nKey = posKey(neighbor);
+      if (closedSet.has(nKey)) continue;
+
+      const cell = grid.getCell(neighbor.col, neighbor.row);
+      const cost = (cell === CellType.Wall || cell === CellType.Tower) ? OBSTACLE_COST : 1;
+      const g = current.g + cost;
+      const existing = openSet.get(nKey);
+
+      if (!existing || g < existing.g) {
+        const h = heuristic(neighbor, goal);
+        const node: Node = { pos: neighbor, g, h, f: g + h, parent: current };
+        openSet.set(nKey, node);
       }
     }
   }
 
-  return best;
+  return null;
 }

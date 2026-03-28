@@ -6,7 +6,7 @@ import {
   GamePhase, Projectile, Position,
 } from './types';
 import { Grid } from './grid';
-import { findPath, findNearestWall, CostMap } from './pathfinding';
+import { findPath, findBestObstacleToAttack, CostMap } from './pathfinding';
 import { WAVES } from './wave';
 import { Renderer } from './renderer';
 import {
@@ -359,34 +359,24 @@ function recalcEnemyPath(state: GameState, enemy: EnemyEntity): void {
     enemy.towerTarget = null;
   } else {
     enemy.path = [];
-    // Find nearest wall or tower to attack
-    const nearestWall = findNearestWall(state.grid, currentTile);
-    const nearestTower = findNearestTower(state, currentTile);
-    // Attack whichever is closer
-    const wallDist = nearestWall ? Math.abs(nearestWall.col - currentTile.col) + Math.abs(nearestWall.row - currentTile.row) : Infinity;
-    const towerDist = nearestTower ? Math.abs(nearestTower.col - currentTile.col) + Math.abs(nearestTower.row - currentTile.row) : Infinity;
-    if (towerDist < wallDist && nearestTower) {
-      enemy.towerTarget = nearestTower;
-      enemy.wallTarget = null;
-    } else {
-      enemy.wallTarget = nearestWall;
-      enemy.towerTarget = null;
+    enemy.wallTarget = null;
+    enemy.towerTarget = null;
+    // Find the obstacle that, if removed, best opens a path to the goal
+    const obstacle = findBestObstacleToAttack(state.grid, currentTile, state.grid.goal);
+    if (obstacle) {
+      if (obstacle.type === CellType.Tower) {
+        const tower = state.towers.find(
+          (t) => t.col === obstacle.pos.col && t.row === obstacle.pos.row
+        );
+        if (tower) enemy.towerTarget = tower;
+      } else {
+        enemy.wallTarget = obstacle.pos;
+      }
     }
   }
 }
 
-function findNearestTower(state: GameState, from: Position): TowerEntity | null {
-  let best: TowerEntity | null = null;
-  let bestDist = Infinity;
-  for (const tower of state.towers) {
-    const dist = Math.abs(tower.col - from.col) + Math.abs(tower.row - from.row);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = tower;
-    }
-  }
-  return best;
-}
+
 
 // ── Update loop ──
 
