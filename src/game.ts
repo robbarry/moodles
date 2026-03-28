@@ -132,6 +132,9 @@ export interface GameState {
   // Path cache (recalculated on build)
   cachedPath: Position[] | null;
 
+  // Set of path cells that can't be blocked (placing here would kill the only route)
+  lockedPathCells: Set<string>;
+
   // Cost map for sneaker tower avoidance
   towerCostMap: CostMap;
 }
@@ -164,6 +167,7 @@ export function createGameState(): GameState {
     audioInitialized: false,
     mouseDown: false,
     cachedPath: null,
+    lockedPathCells: new Set(),
     towerCostMap: buildTowerCostMap([]),
   };
 }
@@ -200,6 +204,25 @@ function buildTowerCostMap(towers: TowerEntity[]): CostMap {
 function recalcPath(state: GameState): void {
   state.cachedPath = findPath(state.grid, state.grid.spawn, state.grid.goal);
   state.towerCostMap = buildTowerCostMap(state.towers);
+  computeLockedCells(state);
+}
+
+/** Find path cells where placing a wall would kill the only route */
+function computeLockedCells(state: GameState): void {
+  state.lockedPathCells = new Set();
+  if (!state.cachedPath) return;
+
+  for (const p of state.cachedPath) {
+    const cell = state.grid.getCell(p.col, p.row);
+    if (cell !== CellType.Empty) continue; // spawn/goal/already built
+    // Temporarily block this cell and see if a path still exists
+    state.grid.setCell(p.col, p.row, CellType.Wall);
+    const alt = findPath(state.grid, state.grid.spawn, state.grid.goal);
+    state.grid.setCell(p.col, p.row, CellType.Empty);
+    if (!alt) {
+      state.lockedPathCells.add(`${p.col},${p.row}`);
+    }
+  }
 }
 
 export function placeBuild(state: GameState, col: number, row: number): boolean {
@@ -464,11 +487,25 @@ function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemo
     return;
   }
 
-  // Wander: bias toward goal with random drift
-  const goalAngle = Math.atan2(dy, dx);
-  enemy.wanderAngle += (Math.random() - 0.5) * 2.5 * dt;
-  const angle = goalAngle * 0.6 + enemy.wanderAngle * 0.4;
+  // Occasionally make a big random turn (every ~1-2 seconds on average)
+  if (Math.random() < dt * 0.8) {
+    enemy.wanderAngle += (Math.random() - 0.5) * Math.PI * 1.5;
+  }
+  // Continuous small drift
+  enemy.wanderAngle += (Math.random() - 0.5) * 4.0 * dt;
 
+  // Light goal bias — stronger when far from goal, weaker when close
+  // This keeps them moving generally goalward without being predictable
+  const goalAngle = Math.atan2(dy, dx);
+  const goalBias = 0.3;
+  // Blend using angular difference to avoid the weird oscillation
+  let angleDiff = goalAngle - enemy.wanderAngle;
+  // Normalize to [-PI, PI]
+  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+  enemy.wanderAngle += angleDiff * goalBias * dt;
+
+  const angle = enemy.wanderAngle;
   const move = enemy.speed * TILE * dt;
   let nx = enemy.x + Math.cos(angle) * move;
   let ny = enemy.y + Math.sin(angle) * move;
@@ -483,7 +520,8 @@ function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemo
   const destCell = state.grid.getCell(destCol, destRow);
 
   if (destCell === CellType.Wall || destCell === CellType.Tower) {
-    enemy.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+    // Bounce: reflect angle away from the obstacle and add randomness
+    enemy.wanderAngle += Math.PI * (0.5 + Math.random());
   } else {
     enemy.x = nx;
     enemy.y = ny;

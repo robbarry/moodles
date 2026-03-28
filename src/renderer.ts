@@ -160,12 +160,12 @@ export class Renderer {
 
     // ── Path overlay ──
     if (state.cachedPath && state.cachedPath.length > 1) {
-      ctx.globalAlpha = 0.2;
-      ctx.fillStyle = '#ffeb3b';
       for (const p of state.cachedPath) {
-        // Don't draw on spawn/goal
         const cell = state.grid.getCell(p.col, p.row);
         if (cell === CellType.Spawn || cell === CellType.Goal) continue;
+        const locked = state.lockedPathCells.has(`${p.col},${p.row}`);
+        ctx.globalAlpha = locked ? 0.25 : 0.15;
+        ctx.fillStyle = locked ? '#f44336' : '#ffeb3b';
         ctx.fillRect(p.col * TILE + 4, p.row * TILE + 4, TILE - 8, TILE - 8);
       }
       ctx.globalAlpha = 1;
