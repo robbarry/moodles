@@ -13,6 +13,7 @@
         align-items: center;
         min-height: 100vh;
         font-family: monospace;
+        color: #eee;
       }
       canvas {
         image-rendering: pixelated;
@@ -23,10 +24,77 @@
         width: auto;
         height: auto;
       }
+      #lobby {
+        text-align: center;
+        max-width: 500px;
+        padding: 20px;
+      }
+      #lobby h1 {
+        font-size: 36px;
+        color: #ffeb3b;
+        margin-bottom: 8px;
+      }
+      #lobby p.sub {
+        color: #888;
+        margin-bottom: 24px;
+        font-size: 13px;
+      }
+      #lobby button {
+        font-family: monospace;
+        font-size: 16px;
+        padding: 12px 28px;
+        margin: 6px;
+        border: none;
+        cursor: pointer;
+        color: #fff;
+        border-radius: 4px;
+      }
+      #lobby .btn-solo { background: #4caf50; }
+      #lobby .btn-host { background: #2196f3; }
+      #lobby .btn-join { background: #ff9800; }
+      #lobby .btn-back { background: #555; font-size: 12px; padding: 8px 16px; }
+      #lobby .btn-copy { background: #7c4dff; font-size: 12px; padding: 8px 16px; }
+      #lobby .btn-connect { background: #4caf50; font-size: 14px; padding: 10px 20px; }
+      #lobby textarea {
+        width: 100%;
+        height: 80px;
+        font-family: monospace;
+        font-size: 11px;
+        background: #16213e;
+        color: #eee;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 8px;
+        margin: 8px 0;
+        resize: none;
+      }
+      #lobby .status {
+        color: #ffeb3b;
+        margin: 12px 0;
+        font-size: 13px;
+      }
+      #lobby .step {
+        color: #aaa;
+        font-size: 12px;
+        margin: 8px 0;
+        line-height: 1.5;
+      }
+      .hidden { display: none !important; }
     </style>
   </head>
   <body>
-    <canvas id="game"></canvas>
+    <div id="lobby">
+      <h1>MOODLES</h1>
+      <p class="sub">Tower Defense</p>
+      <div id="lobby-menu">
+        <button class="btn-solo" onclick="startSolo()">Solo</button>
+        <button class="btn-host" onclick="showHost()">Host Co-op</button>
+        <button class="btn-join" onclick="showJoin()">Join Co-op</button>
+      </div>
+      <div id="lobby-host" class="hidden"></div>
+      <div id="lobby-join" class="hidden"></div>
+    </div>
+    <canvas id="game" class="hidden"></canvas>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

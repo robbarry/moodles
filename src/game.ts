@@ -16,6 +16,7 @@ import {
   startMusic, toggleMusic,
 } from './audio';
 import { Effects } from './effects';
+import { type PeerConnection, type Role, type NetMessage } from './net';
 
 // ── Entity types ──
 
@@ -152,6 +153,10 @@ export interface GameState {
   highScore: number;
   isEndless: boolean;
   notifications: { text: string; timer: number }[];
+
+  // Multiplayer
+  peerCursorCol: number;
+  peerCursorRow: number;
 }
 
 let nextEnemyId = 0;
@@ -205,6 +210,8 @@ export function createGameState(): GameState {
     highScore: getHighScore(),
     isEndless: false,
     notifications: [],
+    peerCursorCol: -1,
+    peerCursorRow: -1,
   };
 }
 
@@ -811,16 +818,126 @@ function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void
 
 export const effects = new Effects();
 
+// ── State serialization for multiplayer ──
+
+interface SerializedState {
+  // Only the fields that need syncing — skip Grid class, recompute on receive
+  cells: number[][];
+  walls: WallEntity[];
+  towers: TowerEntity[];
+  enemies: EnemyEntity[];
+  projectiles: Projectile[];
+  floatingDamage: FloatingDamage[];
+  coins: number;
+  lives: number;
+  phase: GamePhase;
+  currentWave: number;
+  waveCountdown: number;
+  gameTime: number;
+  score: number;
+  enemiesKilled: number;
+  isEndless: boolean;
+  notifications: { text: string; timer: number }[];
+  cachedPath: Position[] | null;
+  lockedPathCells: string[];
+  peerCursorCol: number;
+  peerCursorRow: number;
+  autoStart: boolean;
+  gameSpeed: number;
+  displayCoins: number;
+  displayLives: number;
+}
+
+function serializeState(state: GameState): SerializedState {
+  return {
+    cells: state.grid.cells.map((row) => [...row]),
+    walls: state.walls,
+    towers: state.towers,
+    enemies: state.enemies,
+    projectiles: state.projectiles,
+    floatingDamage: state.floatingDamage,
+    coins: state.coins,
+    lives: state.lives,
+    phase: state.phase,
+    currentWave: state.currentWave,
+    waveCountdown: state.waveCountdown,
+    gameTime: state.gameTime,
+    score: state.score,
+    enemiesKilled: state.enemiesKilled,
+    isEndless: state.isEndless,
+    notifications: state.notifications,
+    cachedPath: state.cachedPath,
+    lockedPathCells: [...state.lockedPathCells],
+    peerCursorCol: state.peerCursorCol,
+    peerCursorRow: state.peerCursorRow,
+    autoStart: state.autoStart,
+    gameSpeed: state.gameSpeed,
+    displayCoins: state.displayCoins,
+    displayLives: state.displayLives,
+  };
+}
+
+function applySerializedState(state: GameState, s: SerializedState): void {
+  // Rebuild grid
+  for (let r = 0; r < s.cells.length; r++) {
+    const row = s.cells[r];
+    if (row) {
+      for (let c = 0; c < row.length; c++) {
+        state.grid.cells[r]![c] = row[c]!;
+      }
+    }
+  }
+  state.walls = s.walls;
+  state.towers = s.towers;
+  state.enemies = s.enemies;
+  state.projectiles = s.projectiles;
+  state.floatingDamage = s.floatingDamage;
+  state.coins = s.coins;
+  state.lives = s.lives;
+  state.phase = s.phase;
+  state.currentWave = s.currentWave;
+  state.waveCountdown = s.waveCountdown;
+  state.gameTime = s.gameTime;
+  state.score = s.score;
+  state.enemiesKilled = s.enemiesKilled;
+  state.isEndless = s.isEndless;
+  state.notifications = s.notifications;
+  state.cachedPath = s.cachedPath;
+  state.lockedPathCells = new Set(s.lockedPathCells);
+  state.peerCursorCol = s.peerCursorCol;
+  state.peerCursorRow = s.peerCursorRow;
+  state.autoStart = s.autoStart;
+  state.gameSpeed = s.gameSpeed;
+  state.displayCoins = s.displayCoins;
+  state.displayLives = s.displayLives;
+}
+
+// ── Game controller ──
+
 export class Game {
   state: GameState;
   renderer: Renderer;
   lastTime: number = 0;
+  role: Role;
+  peer: PeerConnection | null;
+  broadcastTimer = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, role: Role = 'solo', peer: PeerConnection | null = null) {
+    this.role = role;
+    this.peer = peer;
     this.state = createGameState();
     this.renderer = new Renderer(canvas);
     recalcPath(this.state);
     this.setupInput(canvas);
+
+    if (peer) {
+      peer.onMessage = (msg) => this.handleNetMessage(msg);
+      peer.onDisconnected = () => {
+        this.state.notifications.push({ text: 'Peer disconnected!', timer: 5 });
+        this.state.peerCursorCol = -1;
+        this.state.peerCursorRow = -1;
+      };
+    }
   }
 
   start(): void {
@@ -832,22 +949,104 @@ export class Game {
     const dt = Math.min((time - this.lastTime) / 1000, 0.1) * this.state.gameSpeed;
     this.lastTime = time;
 
-    update(this.state, dt);
+    if (this.role !== 'guest') {
+      // Host or solo: run the simulation
+      update(this.state, dt);
+    }
     effects.update(dt);
     this.renderer.draw(this.state);
+
+    // Host: broadcast state at ~15fps
+    if (this.role === 'host' && this.peer?.connected) {
+      this.broadcastTimer += dt;
+      if (this.broadcastTimer >= 1 / 15) {
+        this.broadcastTimer = 0;
+        // Set host cursor as peer cursor for the guest
+        this.peer.send({
+          type: 'state',
+          state: serializeState(this.state),
+          hostCursorCol: this.state.hoverCol,
+          hostCursorRow: this.state.hoverRow,
+        });
+      }
+    }
 
     requestAnimationFrame((t) => this.loop(t));
   }
 
+  private handleNetMessage(msg: NetMessage): void {
+    if (this.role === 'guest' && msg.type === 'state') {
+      // Apply state from host
+      applySerializedState(this.state, msg.state as SerializedState);
+      // Host cursor becomes our peer cursor
+      this.state.peerCursorCol = msg.hostCursorCol as number;
+      this.state.peerCursorRow = msg.hostCursorRow as number;
+    }
+
+    if (this.role === 'host' && msg.type === 'cmd') {
+      // Guest sent a command — apply it
+      this.applyGuestCommand(msg);
+    }
+
+    if (this.role === 'host' && msg.type === 'cursor') {
+      // Guest cursor position
+      this.state.peerCursorCol = msg.col as number;
+      this.state.peerCursorRow = msg.row as number;
+    }
+  }
+
+  private applyGuestCommand(msg: NetMessage): void {
+    const cmd = msg.cmd as string;
+    if (cmd === 'place') {
+      const prev = this.state.selectedBuild;
+      this.state.selectedBuild = msg.build as 'wall' | TowerKind;
+      placeBuild(this.state, msg.col as number, msg.row as number);
+      this.state.selectedBuild = prev;
+    } else if (cmd === 'startWave') {
+      startWave(this.state);
+    } else if (cmd === 'sell') {
+      const tower = this.state.towers.find(
+        (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
+      );
+      if (tower) sellTower(this.state, tower);
+    } else if (cmd === 'upgrade') {
+      const tower = this.state.towers.find(
+        (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
+      );
+      if (tower) upgradeTower(this.state, tower, msg.stat as UpgradeStat);
+    } else if (cmd === 'speed') {
+      this.state.gameSpeed = msg.speed as number;
+    } else if (cmd === 'autoStart') {
+      this.state.autoStart = !this.state.autoStart;
+    }
+  }
+
+  /** For guest: send a command to the host instead of applying locally */
+  private sendCmd(cmd: NetMessage): void {
+    if (this.peer?.connected) {
+      this.peer.send(cmd);
+    }
+  }
+
   private setupInput(canvas: HTMLCanvasElement): void {
+    const isGuest = this.role === 'guest';
+
     canvas.addEventListener('mousemove', (e) => {
       const { col, row, inGrid } = this.renderer.mouseToGrid(e);
       if (inGrid) {
         this.state.hoverCol = col;
         this.state.hoverRow = row;
+        // Send cursor to peer
+        if (this.role === 'guest' && this.peer?.connected) {
+          this.sendCmd({ type: 'cursor', col, row });
+        }
         // Drag-to-place walls
         if (this.state.mouseDown && this.state.selectedBuild === 'wall') {
-          placeBuild(this.state, col, row);
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'place', build: 'wall', col, row });
+          } else {
+            placeBuild(this.state, col, row);
+          }
         }
       } else {
         this.state.hoverCol = -1;
@@ -855,70 +1054,84 @@ export class Game {
       }
     });
 
-    canvas.addEventListener('mousedown', () => {
-      this.state.mouseDown = true;
-    });
-    canvas.addEventListener('mouseup', () => {
-      this.state.mouseDown = false;
-    });
-    canvas.addEventListener('mouseleave', () => {
-      this.state.mouseDown = false;
-    });
+    canvas.addEventListener('mousedown', () => { this.state.mouseDown = true; });
+    canvas.addEventListener('mouseup', () => { this.state.mouseDown = false; });
+    canvas.addEventListener('mouseleave', () => { this.state.mouseDown = false; });
 
     canvas.addEventListener('click', (e) => {
-      // Start music on first interaction
+      // Start music on first interaction (always local)
       if (!this.state.audioInitialized) {
         this.state.audioInitialized = true;
         startMusic();
         this.state.musicOn = true;
       }
 
-      // Check music toggle
+      // Music toggle (always local)
       if (this.renderer.mouseToMusicBtn(e)) {
         this.state.musicOn = toggleMusic();
         return;
       }
 
-      // Check for restart on game-over/win
-      if (this.state.phase === GamePhase.Lost) {
+      // Restart (host/solo only)
+      if (this.state.phase === GamePhase.Lost && !isGuest) {
         this.state = createGameState();
         recalcPath(this.state);
         return;
       }
 
-      // Check speed buttons
+      // Speed buttons
       const spd = this.renderer.mouseToSpeedBtn(e);
       if (spd > 0) {
-        this.state.gameSpeed = spd;
+        if (isGuest) {
+          this.sendCmd({ type: 'cmd', cmd: 'speed', speed: spd });
+        } else {
+          this.state.gameSpeed = spd;
+        }
         return;
       }
 
-      // Check auto-start checkbox
+      // Auto-start
       if (this.renderer.mouseToAutoStart(e)) {
-        this.state.autoStart = !this.state.autoStart;
+        if (isGuest) {
+          this.sendCmd({ type: 'cmd', cmd: 'autoStart' });
+        } else {
+          this.state.autoStart = !this.state.autoStart;
+        }
         return;
       }
 
-      // Check start button
+      // Start wave
       if (this.renderer.mouseToStartBtn(e)) {
-        startWave(this.state);
+        if (isGuest) {
+          this.sendCmd({ type: 'cmd', cmd: 'startWave' });
+        } else {
+          startWave(this.state);
+        }
         return;
       }
 
-      // If a tower is selected, check upgrade/sell buttons
+      // Tower upgrade/sell
       if (this.state.selectedTower) {
         if (this.renderer.mouseToSellBtn(e)) {
-          sellTower(this.state, this.state.selectedTower);
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'sell', col: this.state.selectedTower.col, row: this.state.selectedTower.row });
+          } else {
+            sellTower(this.state, this.state.selectedTower);
+          }
           return;
         }
         const upgBtn = this.renderer.mouseToUpgradeBtn(e);
         if (upgBtn) {
-          upgradeTower(this.state, this.state.selectedTower, upgBtn);
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'upgrade', col: this.state.selectedTower.col, row: this.state.selectedTower.row, stat: upgBtn });
+          } else {
+            upgradeTower(this.state, this.state.selectedTower, upgBtn);
+          }
           return;
         }
       }
 
-      // Check build bar buttons (only when no tower selected)
+      // Build bar buttons (local UI selection for both roles)
       if (!this.state.selectedTower) {
         const btnIdx = this.renderer.mouseToButton(e);
         if (btnIdx >= 0) {
@@ -934,10 +1147,10 @@ export class Game {
         }
       }
 
-      // Click on grid
+      // Grid click
       const { col, row, inGrid } = this.renderer.mouseToGrid(e);
       if (inGrid) {
-        // Check if clicking an existing tower
+        // Select tower (local UI)
         const clickedTower = this.state.towers.find((t) => t.col === col && t.row === row);
         if (clickedTower) {
           this.state.selectedTower = this.state.selectedTower === clickedTower ? null : clickedTower;
@@ -945,14 +1158,17 @@ export class Game {
           return;
         }
 
-        // Deselect tower when clicking elsewhere on grid
         if (this.state.selectedTower) {
           this.state.selectedTower = null;
         }
 
-        // Place on grid
+        // Place
         if (this.state.selectedBuild !== null) {
-          placeBuild(this.state, col, row);
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'place', build: this.state.selectedBuild, col, row });
+          } else {
+            placeBuild(this.state, col, row);
+          }
         }
       }
     });
@@ -968,7 +1184,6 @@ export class Game {
         this.state.selectedBuild = null;
         this.state.selectedTower = null;
       }
-      // Hotkeys
       if (e.key >= '1' && e.key <= '7') this.state.selectedTower = null;
       if (e.key === '1') this.state.selectedBuild = 'wall';
       if (e.key === '2') this.state.selectedBuild = TowerKind.PeaShooter;
@@ -979,7 +1194,11 @@ export class Game {
       if (e.key === '7') this.state.selectedBuild = TowerKind.CoinTree;
       if (e.key === ' ') {
         e.preventDefault();
-        startWave(this.state);
+        if (isGuest) {
+          this.sendCmd({ type: 'cmd', cmd: 'startWave' });
+        } else {
+          startWave(this.state);
+        }
       }
     });
   }

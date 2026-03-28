@@ -249,6 +249,19 @@ export class Renderer {
       }
     }
 
+    // ── Peer cursor ──
+    if (state.peerCursorCol >= 0 && state.peerCursorRow >= 0) {
+      const px = state.peerCursorCol * TILE;
+      const py = state.peerCursorRow * TILE;
+      ctx.strokeStyle = '#ffeb3b';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px + 2, py + 2, TILE - 4, TILE - 4);
+      // Small "P2" label
+      ctx.fillStyle = '#ffeb3b';
+      ctx.font = '8px monospace';
+      ctx.fillText('P2', px + 2, py - 2);
+    }
+
     // ── Enemies ──
     for (const enemy of state.enemies) {
       const x = enemy.x - TILE / 2;
