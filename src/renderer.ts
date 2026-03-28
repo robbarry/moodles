@@ -93,6 +93,12 @@ export class Renderer {
     return x >= sellX && x < sellX + 70;
   }
 
+  /** Check if mouse clicks the music toggle */
+  mouseToMusicBtn(e: MouseEvent): boolean {
+    const { x, y } = this.mouseToLogical(e);
+    return x >= CANVAS_W - 310 && x <= CANVAS_W - 285 && y >= 10 && y <= 32;
+  }
+
   /** Check if mouse clicks a speed button. Returns the speed (1,2,3) or 0 */
   mouseToSpeedBtn(e: MouseEvent): number {
     const { x, y } = this.mouseToLogical(e);
@@ -280,6 +286,22 @@ export class Renderer {
     ctx.fillText(`Lives: ${state.lives}`, 12, 26);
     ctx.fillText(`Coins: ${state.coins}`, 120, 26);
     ctx.fillText(`Wave: ${state.currentWave}/${state.totalWaves}`, 240, 26);
+
+    // Music toggle
+    const mX = CANVAS_W - 308;
+    ctx.fillStyle = state.musicOn ? '#283593' : '#1a237e';
+    ctx.fillRect(mX, 10, 22, 20);
+    ctx.fillStyle = state.musicOn ? '#eee' : '#666';
+    ctx.font = '12px monospace';
+    ctx.fillText(state.musicOn ? 'M' : 'M', mX + 5, 24);
+    if (!state.musicOn) {
+      ctx.strokeStyle = '#f44336';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(mX + 2, 28);
+      ctx.lineTo(mX + 20, 12);
+      ctx.stroke();
+    }
 
     // Speed buttons
     const speedStartX = CANVAS_W - 280;

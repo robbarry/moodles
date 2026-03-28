@@ -9,6 +9,11 @@ import { Grid } from './grid';
 import { findPath, findNearestWall, CostMap } from './pathfinding';
 import { WAVES } from './wave';
 import { Renderer } from './renderer';
+import {
+  sfxShoot, sfxSlopShoot, sfxZapShoot, sfxPlace, sfxSell, sfxUpgrade,
+  sfxEnemyDeath, sfxWallBreak, sfxWaveStart, sfxLifeLost, sfxWin, sfxLose,
+  startMusic, toggleMusic,
+} from './audio';
 
 // ── Entity types ──
 
@@ -123,6 +128,8 @@ export interface GameState {
   hoverRow: number;
   autoStart: boolean;
   gameSpeed: number;  // 1, 2, or 3
+  musicOn: boolean;
+  audioInitialized: boolean;
 
   // Path cache (recalculated on build)
   cachedPath: Position[] | null;
@@ -155,6 +162,8 @@ export function createGameState(): GameState {
     hoverRow: -1,
     autoStart: false,
     gameSpeed: 1,
+    musicOn: false,
+    audioInitialized: false,
     cachedPath: null,
     towerCostMap: buildTowerCostMap([]),
   };
@@ -220,6 +229,7 @@ export function placeBuild(state: GameState, col: number, row: number): boolean 
     }
   }
 
+  sfxPlace();
   return true;
 }
 
@@ -250,10 +260,12 @@ export function upgradeTower(state: GameState, tower: TowerEntity, stat: Upgrade
       }
     }
   }
+  sfxUpgrade();
   return true;
 }
 
 export function sellTower(state: GameState, tower: TowerEntity): void {
+  sfxSell();
   state.coins += sellValue(tower);
   state.grid.setCell(tower.col, tower.row, CellType.Empty);
   state.towers = state.towers.filter((t) => t !== tower);
@@ -286,6 +298,7 @@ export function startWave(state: GameState): void {
   }
 
   state.waveCountdown = 3;
+  sfxWaveStart();
   state.phase = GamePhase.Wave;
 }
 
@@ -381,6 +394,7 @@ export function update(state: GameState, dt: number): void {
   ) {
     if (state.currentWave >= state.totalWaves) {
       state.phase = GamePhase.Won;
+      sfxWin();
     } else {
       state.coins += WAVE_BONUS;
       state.currentWave++;
@@ -395,6 +409,7 @@ export function update(state: GameState, dt: number): void {
   if (state.lives <= 0) {
     state.lives = 0;
     state.phase = GamePhase.Lost;
+    sfxLose();
   }
 }
 
@@ -412,6 +427,7 @@ function updateEnemies(state: GameState, dt: number): void {
 
       if (dist < 4) {
         state.lives--;
+        sfxLifeLost();
         toRemove.push(enemy.id);
         continue;
       }
@@ -438,6 +454,7 @@ function updateEnemies(state: GameState, dt: number): void {
             wall.hp -= enemy.wallDps * dt;
             if (wall.hp <= 0) {
               // Wall destroyed
+              sfxWallBreak();
               destroyWall(state, wall);
               // Recalc all ground enemy paths
               for (const e of state.enemies) {
@@ -527,6 +544,11 @@ function updateTowers(state: GameState, dt: number): void {
     if (nearest) {
       tower.cooldown = towerFireRate(tower);
 
+      // Shoot sfx
+      if (tower.kind === TowerKind.SlopCannon) sfxSlopShoot();
+      else if (tower.kind === TowerKind.Zapper) sfxZapShoot();
+      else sfxShoot();
+
       // Calculate damage (with flyer bonus)
       let damage = towerDamage(tower);
       if (nearest.kind === EnemyKind.Flyer) {
@@ -605,6 +627,7 @@ function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number): void
 
   if (enemy.hp <= 0) {
     state.coins += enemy.reward;
+    sfxEnemyDeath();
     state.enemies = state.enemies.filter((e) => e.id !== enemy.id);
     // Also remove projectiles targeting this enemy
     state.projectiles = state.projectiles.filter((p) => p.targetId !== enemy.id);
@@ -653,6 +676,19 @@ export class Game {
     });
 
     canvas.addEventListener('click', (e) => {
+      // Start music on first interaction
+      if (!this.state.audioInitialized) {
+        this.state.audioInitialized = true;
+        startMusic();
+        this.state.musicOn = true;
+      }
+
+      // Check music toggle
+      if (this.renderer.mouseToMusicBtn(e)) {
+        this.state.musicOn = toggleMusic();
+        return;
+      }
+
       // Check for restart on game-over/win
       if (this.state.phase === GamePhase.Won || this.state.phase === GamePhase.Lost) {
         this.state = createGameState();
