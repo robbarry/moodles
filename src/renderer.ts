@@ -603,28 +603,38 @@ export class Renderer {
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
     ctx.fillRect(0, 0, CANVAS_W, TOTAL_H);
 
+    const cy = TOTAL_H / 2;
+
     ctx.fillStyle = '#f44336';
     ctx.font = 'bold 32px monospace';
     const text = 'GAME OVER';
     const tw = ctx.measureText(text).width;
-    ctx.fillText(text, (CANVAS_W - tw) / 2, TOTAL_H / 2 - 30);
+    ctx.fillText(text, (CANVAS_W - tw) / 2, cy - 40);
 
     ctx.fillStyle = '#eee';
     ctx.font = '14px monospace';
     const waveTxt = `Wave ${state.currentWave}  Score: ${state.score}`;
     const ww = ctx.measureText(waveTxt).width;
-    ctx.fillText(waveTxt, (CANVAS_W - ww) / 2, TOTAL_H / 2);
+    ctx.fillText(waveTxt, (CANVAS_W - ww) / 2, cy - 12);
 
     ctx.fillStyle = '#aaa';
     ctx.font = '12px monospace';
     const hiTxt = `High Score: ${state.highScore}`;
     const hw = ctx.measureText(hiTxt).width;
-    ctx.fillText(hiTxt, (CANVAS_W - hw) / 2, TOTAL_H / 2 + 18);
+    ctx.fillText(hiTxt, (CANVAS_W - hw) / 2, cy + 6);
 
-    ctx.fillStyle = '#eee';
-    const sub = 'Click to restart';
-    const sw = ctx.measureText(sub).width;
-    ctx.fillText(sub, (CANVAS_W - sw) / 2, TOTAL_H / 2 + 38);
+    // Restart button
+    const btnW = 140;
+    const btnH = 32;
+    const btnX = (CANVAS_W - btnW) / 2;
+    const btnY = cy + 22;
+    ctx.fillStyle = '#4caf50';
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px monospace';
+    const btnTxt = 'Play Again';
+    const btw = ctx.measureText(btnTxt).width;
+    ctx.fillText(btnTxt, (CANVAS_W - btw) / 2, btnY + 21);
   }
 
   private drawCountdown(state: GameState): void {
