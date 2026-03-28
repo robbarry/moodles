@@ -1057,11 +1057,15 @@ export class Game {
         ? { col: this.state.selectedWall.col, row: this.state.selectedWall.row }
         : null;
       const hover = { col: this.state.hoverCol, row: this.state.hoverRow };
+      const localDisplayCoins = this.state.displayCoins;
+      const localDisplayLives = this.state.displayLives;
 
       applySerializedState(this.state, msg.state as SerializedState);
 
-      // Restore local UI state
+      // Restore local UI/display state
       this.state.selectedBuild = selBuild;
+      this.state.displayCoins = localDisplayCoins;
+      this.state.displayLives = localDisplayLives;
       this.state.hoverCol = hover.col;
       this.state.hoverRow = hover.row;
       if (selTowerPos) {
