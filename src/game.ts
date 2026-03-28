@@ -891,7 +891,7 @@ function serializeState(state: GameState): SerializedState {
     walls: state.walls,
     towers: state.towers,
     enemies: state.enemies,
-    projectiles: state.projectiles,
+    projectiles: state.projectiles.map((p) => ({ ...p, trail: [] })),
     floatingDamage: state.floatingDamage,
     coins: state.coins,
     hostCoins: state.hostCoins,
@@ -1003,7 +1003,7 @@ export class Game {
     // Host: broadcast state at ~15fps
     if (this.role === 'host' && this.peer?.connected) {
       this.broadcastTimer += dt;
-      if (this.broadcastTimer >= 1 / 15) {
+      if (this.broadcastTimer >= 1 / 10) {
         this.broadcastTimer = 0;
         // Set host cursor as peer cursor for the guest
         this.peer.send({
@@ -1020,8 +1020,25 @@ export class Game {
 
   private handleNetMessage(msg: NetMessage): void {
     if (this.role === 'guest' && msg.type === 'state') {
-      // Apply state from host
+      // Preserve local UI state
+      const selBuild = this.state.selectedBuild;
+      const selTowerPos = this.state.selectedTower
+        ? { col: this.state.selectedTower.col, row: this.state.selectedTower.row }
+        : null;
+      const hover = { col: this.state.hoverCol, row: this.state.hoverRow };
+
       applySerializedState(this.state, msg.state as SerializedState);
+
+      // Restore local UI state
+      this.state.selectedBuild = selBuild;
+      this.state.hoverCol = hover.col;
+      this.state.hoverRow = hover.row;
+      // Re-resolve selectedTower by position (old reference is stale)
+      if (selTowerPos) {
+        this.state.selectedTower = this.state.towers.find(
+          (t) => t.col === selTowerPos.col && t.row === selTowerPos.row
+        ) ?? null;
+      }
       // Host cursor becomes our peer cursor
       this.state.peerCursorCol = msg.hostCursorCol as number;
       this.state.peerCursorRow = msg.hostCursorRow as number;

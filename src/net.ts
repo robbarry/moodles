@@ -9,9 +9,8 @@ export interface NetMessage {
   [key: string]: unknown;
 }
 
-// Room code: MOODLE-XXXX where X is random alphanumeric
 function generateRoomCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous I/1/O/0
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) {
     code += chars[Math.floor(Math.random() * chars.length)];
@@ -34,12 +33,10 @@ export class PeerConnection {
     this.role = role;
   }
 
-  /** Host: create a room and wait for a guest to join */
   async host(): Promise<string> {
     this.roomCode = generateRoomCode();
 
     return new Promise((resolve, reject) => {
-      // Use the room code as the peer ID so the guest can find us
       this.peer = new Peer(this.roomCode);
 
       this.peer.on('open', () => {
@@ -47,7 +44,6 @@ export class PeerConnection {
       });
 
       this.peer.on('error', (err) => {
-        // If the ID is taken, try again with a new code
         if (err.type === 'unavailable-id') {
           this.roomCode = generateRoomCode();
           this.peer?.destroy();
@@ -66,7 +62,6 @@ export class PeerConnection {
     });
   }
 
-  /** Guest: join a room by code */
   async join(roomCode: string): Promise<void> {
     this.roomCode = roomCode.toUpperCase().trim();
 
@@ -90,7 +85,6 @@ export class PeerConnection {
         reject(err.message);
       });
 
-      // Timeout
       setTimeout(() => {
         if (!this.connected) {
           reject('Connection timed out — check the room code');
@@ -99,9 +93,10 @@ export class PeerConnection {
     });
   }
 
+  /** Send a message — PeerJS handles JSON serialization */
   send(msg: NetMessage): void {
     if (this.conn?.open) {
-      this.conn.send(JSON.stringify(msg));
+      this.conn.send(msg);
     }
   }
 
@@ -125,10 +120,11 @@ export class PeerConnection {
     });
 
     conn.on('data', (data) => {
-      try {
-        const msg = JSON.parse(data as string) as NetMessage;
+      // PeerJS JSON serialization delivers objects directly
+      const msg = data as NetMessage;
+      if (msg && typeof msg.type === 'string') {
         this.onMessage?.(msg);
-      } catch { /* ignore bad messages */ }
+      }
     });
 
     conn.on('error', (err) => {
