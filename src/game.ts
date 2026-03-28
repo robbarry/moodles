@@ -98,6 +98,7 @@ export interface EnemyEntity {
   reward: number;
   wallDps: number;
   wanderAngle: number;  // for Wanderer's semi-random movement
+  attackTimer: number;  // seconds remaining to attack current target
 }
 
 export interface FloatingDamage {
@@ -333,6 +334,7 @@ function spawnEnemy(state: GameState, kind: EnemyKind, hpMult: number): void {
     reward: def.reward,
     wallDps: def.wallDps,
     wanderAngle: Math.random() * Math.PI * 2,
+    attackTimer: 0,
   };
 
   if (kind !== EnemyKind.Flyer) {
@@ -572,6 +574,8 @@ function updateEnemies(state: GameState, dt: number): void {
   state.enemies = state.enemies.filter((e) => !toRemove.includes(e.id));
 }
 
+const WANDERER_ATTACK_DURATION = 2.5; // seconds to lock onto a target
+
 function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemove: number[]): void {
   const goalX = state.grid.goal.col * TILE + TILE / 2;
   const goalY = state.grid.goal.row * TILE + TILE / 2;
@@ -587,54 +591,102 @@ function updateWanderer(state: GameState, enemy: EnemyEntity, dt: number, toRemo
     return;
   }
 
-  // Wanderer: bias toward goal but wander randomly
+  // If locked onto a wall target, keep attacking it
+  if (enemy.wallTarget && enemy.attackTimer > 0) {
+    const wall = state.walls.find(
+      (w) => w.col === enemy.wallTarget!.col && w.row === enemy.wallTarget!.row
+    );
+    if (wall) {
+      // Move toward the wall
+      const wx = wall.col * TILE + TILE / 2;
+      const wy = wall.row * TILE + TILE / 2;
+      const wdx = wx - enemy.x;
+      const wdy = wy - enemy.y;
+      const wdist = Math.sqrt(wdx * wdx + wdy * wdy);
+      if (wdist > TILE) {
+        const move = enemy.speed * TILE * dt;
+        enemy.x += (wdx / wdist) * move;
+        enemy.y += (wdy / wdist) * move;
+      } else {
+        // In range — deal damage
+        wall.hp -= enemy.wallDps * dt;
+        if (wall.hp <= 0) {
+          sfxWallBreak();
+          destroyWall(state, wall);
+          for (const e of state.enemies) {
+            if (e.kind !== EnemyKind.Flyer) recalcEnemyPath(state, e);
+          }
+          enemy.wallTarget = null;
+          enemy.attackTimer = 0;
+        }
+      }
+      enemy.attackTimer -= dt;
+      return;
+    }
+    // Wall gone
+    enemy.wallTarget = null;
+    enemy.attackTimer = 0;
+  }
+
+  // If locked onto a tower target, keep attacking it
+  if (enemy.towerTarget && enemy.attackTimer > 0) {
+    const tower = enemy.towerTarget;
+    if (!state.towers.includes(tower)) {
+      enemy.towerTarget = null;
+      enemy.attackTimer = 0;
+    } else {
+      const tx = tower.col * TILE + TILE / 2;
+      const ty = tower.row * TILE + TILE / 2;
+      const tdx = tx - enemy.x;
+      const tdy = ty - enemy.y;
+      const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+      if (tdist > TILE) {
+        const move = enemy.speed * TILE * dt;
+        enemy.x += (tdx / tdist) * move;
+        enemy.y += (tdy / tdist) * move;
+      } else {
+        tower.hp -= enemy.wallDps * dt;
+        if (tower.hp <= 0) {
+          destroyTower(state, tower);
+          enemy.towerTarget = null;
+          enemy.attackTimer = 0;
+        }
+      }
+      enemy.attackTimer -= dt;
+      return;
+    }
+  }
+
+  // Wander: bias toward goal with random drift
   const goalAngle = Math.atan2(dy, dx);
-  // Randomly drift the wander angle, biased toward goal
   enemy.wanderAngle += (Math.random() - 0.5) * 2.5 * dt;
-  // Blend: 60% goal direction, 40% wander
   const angle = goalAngle * 0.6 + enemy.wanderAngle * 0.4;
 
   const move = enemy.speed * TILE * dt;
   let nx = enemy.x + Math.cos(angle) * move;
   let ny = enemy.y + Math.sin(angle) * move;
 
-  // Clamp to grid bounds
   const half = TILE / 2;
   nx = Math.max(half, Math.min(COLS * TILE - half, nx));
   ny = Math.max(half, Math.min(ROWS * TILE - half, ny));
 
-  // Check if destination cell is blocked
   const destCol = Math.floor(nx / TILE);
   const destRow = Math.floor(ny / TILE);
   const destCell = state.grid.getCell(destCol, destRow);
 
   if (destCell === CellType.Wall) {
-    // Attack the wall
-    const wall = state.walls.find((w) => w.col === destCol && w.row === destRow);
-    if (wall) {
-      wall.hp -= enemy.wallDps * dt;
-      if (wall.hp <= 0) {
-        sfxWallBreak();
-        destroyWall(state, wall);
-        for (const e of state.enemies) {
-          if (e.kind !== EnemyKind.Flyer) {
-            recalcEnemyPath(state, e);
-          }
-        }
-      }
-    }
-    // Bounce the wander angle
-    enemy.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+    // Lock onto this wall and attack it
+    enemy.wallTarget = { col: destCol, row: destRow };
+    enemy.towerTarget = null;
+    enemy.attackTimer = WANDERER_ATTACK_DURATION;
   } else if (destCell === CellType.Tower) {
-    // Attack the tower
+    // Lock onto this tower and attack it
     const tower = state.towers.find((t) => t.col === destCol && t.row === destRow);
     if (tower) {
-      tower.hp -= enemy.wallDps * dt;
-      if (tower.hp <= 0) {
-        destroyTower(state, tower);
-      }
+      enemy.towerTarget = tower;
+      enemy.wallTarget = null;
+      enemy.attackTimer = WANDERER_ATTACK_DURATION;
     }
-    enemy.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
   } else {
     enemy.x = nx;
     enemy.y = ny;

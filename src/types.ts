@@ -129,10 +129,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
   [EnemyKind.Wanderer]: {
     kind: EnemyKind.Wanderer,
     name: 'Wanderer',
-    baseHp: 70,
-    speed: 0.8,
+    baseHp: 80,
+    speed: 0.9,
     reward: 6,
-    wallDps: 25,
+    wallDps: 40,
     color: '#ff5722',
   },
 };
