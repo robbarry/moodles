@@ -7,7 +7,7 @@ import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, MAX_UPGRADE, effects, canPlaceAt } from './game';
+import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, getCoins, MAX_UPGRADE, effects, canPlaceAt } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -57,9 +57,13 @@ export class Renderer {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return -1;
-    const btnW = CANVAS_W / 7;
-    const idx = Math.floor(x / btnW);
-    return idx >= 0 && idx < 7 ? idx : -1;
+    const count = 7;
+    for (let i = 0; i < count; i++) {
+      const left = Math.floor(i * CANVAS_W / count);
+      const right = Math.floor((i + 1) * CANVAS_W / count);
+      if (x >= left && x < right) return i;
+    }
+    return -1;
   }
 
   /** Check if mouse clicks the Start Wave button */
@@ -498,26 +502,27 @@ export class Renderer {
       })),
     ];
 
-    const btnW = CANVAS_W / 7;
-    for (let i = 0; i < items.length; i++) {
+    const count = items.length;
+    for (let i = 0; i < count; i++) {
       const item = items[i]!;
-      const x = i * btnW;
+      const x = Math.floor(i * CANVAS_W / count);
+      const w = Math.floor((i + 1) * CANVAS_W / count) - x;
       const selected = state.selectedBuild === item.key;
       const affordable = state.coins >= item.cost;
 
       ctx.fillStyle = selected ? '#3949ab' : affordable ? '#283593' : '#1a237e';
-      ctx.fillRect(x + 2, barY + 4, btnW - 4, HUD_BOT_H - 8);
+      ctx.fillRect(x + 1, barY + 4, w - 2, HUD_BOT_H - 8);
 
       ctx.fillStyle = affordable ? '#eee' : '#666';
       ctx.font = '11px monospace';
-      ctx.fillText(item.label, x + 8, barY + 20);
+      ctx.fillText(item.label, x + 6, barY + 20);
       ctx.font = '10px monospace';
-      ctx.fillText(`$${item.cost}`, x + 8, barY + 34);
+      ctx.fillText(`$${item.cost}`, x + 6, barY + 34);
 
       if (selected) {
         ctx.strokeStyle = '#7c4dff';
         ctx.lineWidth = 2;
-        ctx.strokeRect(x + 2, barY + 4, btnW - 4, HUD_BOT_H - 8);
+        ctx.strokeRect(x + 1, barY + 4, w - 2, HUD_BOT_H - 8);
       }
     }
   }
@@ -540,7 +545,7 @@ export class Renderer {
       const x = gap + i * (btnW + gap);
       const cost = upgradeCost(tower, s.stat);
       const maxed = s.level >= MAX_UPGRADE;
-      const affordable = state.coins >= cost;
+      const affordable = getCoins(state, tower.owner) >= cost;
 
       ctx.fillStyle = maxed ? '#1b5e20' : affordable ? '#283593' : '#1a237e';
       ctx.fillRect(x, barY + 4, btnW, HUD_BOT_H - 8);

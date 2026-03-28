@@ -1103,17 +1103,17 @@ export class Game {
       startWave(this.state);
     } else if (cmd === 'sell') {
       const tower = this.state.towers.find(
-        (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
+        (t) => t.col === (msg.col as number) && t.row === (msg.row as number) && t.owner === 'guest'
       );
       if (tower) sellTower(this.state, tower);
     } else if (cmd === 'sellWall') {
       const wall = this.state.walls.find(
-        (w) => w.col === (msg.col as number) && w.row === (msg.row as number)
+        (w) => w.col === (msg.col as number) && w.row === (msg.row as number) && w.owner === 'guest'
       );
       if (wall) sellWall(this.state, wall);
     } else if (cmd === 'upgrade') {
       const tower = this.state.towers.find(
-        (t) => t.col === (msg.col as number) && t.row === (msg.row as number)
+        (t) => t.col === (msg.col as number) && t.row === (msg.row as number) && t.owner === 'guest'
       );
       if (tower) upgradeTower(this.state, tower, msg.stat as UpgradeStat);
     } else if (cmd === 'speed') {
@@ -1121,6 +1121,10 @@ export class Game {
     } else if (cmd === 'autoStart') {
       this.state.autoStart = !this.state.autoStart;
     }
+  }
+
+  private get localOwner(): 'host' | 'guest' | 'solo' {
+    return this.role === 'guest' ? 'guest' : this.role === 'host' ? 'host' : 'solo';
   }
 
   /** For guest: send a command to the host instead of applying locally */
@@ -1266,16 +1270,16 @@ export class Game {
       if (inGrid) {
         // Select tower
         const clickedTower = this.state.towers.find((t) => t.col === col && t.row === row);
-        if (clickedTower) {
+        if (clickedTower && (clickedTower.owner === this.localOwner || this.localOwner === 'solo')) {
           this.state.selectedTower = this.state.selectedTower === clickedTower ? null : clickedTower;
           this.state.selectedWall = null;
           this.state.selectedBuild = null;
           return;
         }
 
-        // Select wall
+        // Select wall (only own walls)
         const clickedWall = this.state.walls.find((w) => w.col === col && w.row === row);
-        if (clickedWall) {
+        if (clickedWall && (clickedWall.owner === this.localOwner || this.localOwner === 'solo')) {
           this.state.selectedWall = this.state.selectedWall === clickedWall ? null : clickedWall;
           this.state.selectedTower = null;
           this.state.selectedBuild = null;
