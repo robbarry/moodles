@@ -4,6 +4,9 @@ import {
   TOWER_DEFS, ENEMY_DEFS,
   STARTING_COINS, STARTING_LIVES, WALL_COST, WAVE_BONUS,
   GamePhase, Projectile, Position,
+  BATTLE_COLS, BATTLE_LIVES, BATTLE_SEND_SPACING, BATTLE_MAX_QUEUE,
+  BATTLE_TIERS, BATTLE_SEND_COSTS, BATTLE_KILL_BOUNTIES,
+  SendEntry,
 } from './types';
 import { Grid } from './grid';
 import { findPath, CostMap } from './pathfinding';
@@ -97,6 +100,7 @@ export interface EnemyEntity {
   slowTimer: number;
   speedMultiplier: number;
   healCooldown: number;
+  targetSide?: 'host' | 'guest';  // battle mode: which side this enemy is attacking
 }
 
 export interface FloatingDamage {
@@ -162,6 +166,30 @@ export interface GameState {
   // Multiplayer
   peerCursorCol: number;
   peerCursorRow: number;
+
+  // Battle mode
+  battleMode: boolean;
+  offenseMode: boolean;          // UI toggle: false = defense bar, true = offense bar
+  matchClock: number;            // elapsed seconds
+  hostOffense: number;           // offense meter points
+  guestOffense: number;
+  offenseDrip: number;           // current drip rate pts/sec
+  hostSendQueue: SendEntry[];
+  guestSendQueue: SendEntry[];
+  hostSendTimer: number;         // spawn spacing timer for host's incoming enemies
+  guestSendTimer: number;
+  hostLives: number;
+  guestLives: number;
+  unlockedTiers: EnemyKind[];
+  hostGrid: Grid | null;         // host's half (local 10-col coords)
+  guestGrid: Grid | null;        // guest's half (local 10-col coords)
+  hostCachedPath: Position[] | null;
+  guestCachedPath: Position[] | null;
+  hostLockedCells: Set<string>;
+  guestLockedCells: Set<string>;
+  hostTowerCostMap: CostMap;
+  guestTowerCostMap: CostMap;
+  viewSide: 'host' | 'guest';  // which side the local player is on (for HUD rendering)
 }
 
 let nextEnemyId = 0;
@@ -220,7 +248,150 @@ export function createGameState(): GameState {
     notifications: [],
     peerCursorCol: -1,
     peerCursorRow: -1,
+
+    // Battle mode defaults (inactive until battle starts)
+    battleMode: false,
+    offenseMode: false,
+    matchClock: 0,
+    hostOffense: 0,
+    guestOffense: 0,
+    offenseDrip: BATTLE_TIERS[0]![2],
+    hostSendQueue: [],
+    guestSendQueue: [],
+    hostSendTimer: 0,
+    guestSendTimer: 0,
+    hostLives: BATTLE_LIVES,
+    guestLives: BATTLE_LIVES,
+    unlockedTiers: [...BATTLE_TIERS[0]![1]],
+    hostGrid: null,
+    guestGrid: null,
+    hostCachedPath: null,
+    guestCachedPath: null,
+    hostLockedCells: new Set(),
+    guestLockedCells: new Set(),
+    hostTowerCostMap: [],
+    guestTowerCostMap: [],
+    viewSide: 'host',
   };
+}
+
+// ── Battle mode initialization ──
+
+export function initBattleMode(state: GameState): void {
+  state.battleMode = true;
+  state.phase = GamePhase.Battle;
+  state.matchClock = 0;
+  state.hostOffense = 0;
+  state.guestOffense = 0;
+  state.offenseDrip = BATTLE_TIERS[0]![2];
+  state.hostSendQueue = [];
+  state.guestSendQueue = [];
+  state.hostSendTimer = 0;
+  state.guestSendTimer = 0;
+  state.hostLives = BATTLE_LIVES;
+  state.guestLives = BATTLE_LIVES;
+  state.unlockedTiers = [...BATTLE_TIERS[0]![1]];
+  state.lives = BATTLE_LIVES; // display-only
+
+  // Host's half (cols 0-9 in global, 0-9 in local):
+  // Enemies spawn at right edge (col 9), goal at left edge (col 0)
+  // Guest's sent enemies walk right-to-left on host's board
+  state.hostGrid = new Grid(BATTLE_COLS, ROWS, { col: BATTLE_COLS - 1, row: 0 }, { col: 0, row: ROWS - 1 });
+
+  // Guest's half (cols 10-19 in global, 0-9 in local):
+  // Enemies spawn at left edge (col 0), goal at right edge (col 9)
+  // Host's sent enemies walk left-to-right on guest's board
+  state.guestGrid = new Grid(BATTLE_COLS, ROWS, { col: 0, row: 0 }, { col: BATTLE_COLS - 1, row: ROWS - 1 });
+
+  recalcBattlePath(state, 'host');
+  recalcBattlePath(state, 'guest');
+}
+
+// ── Battle mode coordinate translation ──
+
+/** Convert global column (0-19) to local column (0-9) and side */
+export function globalToLocal(globalCol: number): { localCol: number; side: 'host' | 'guest' } {
+  if (globalCol < BATTLE_COLS) {
+    return { localCol: globalCol, side: 'host' };
+  }
+  return { localCol: globalCol - BATTLE_COLS, side: 'guest' };
+}
+
+/** Convert local column + side to global column */
+export function localToGlobal(localCol: number, side: 'host' | 'guest'): number {
+  return side === 'host' ? localCol : localCol + BATTLE_COLS;
+}
+
+/** Get the grid for a given side */
+function getBattleGrid(state: GameState, side: 'host' | 'guest'): Grid {
+  return side === 'host' ? state.hostGrid! : state.guestGrid!;
+}
+
+/** Recalc path and locked cells for one side of the battle board */
+function recalcBattlePath(state: GameState, side: 'host' | 'guest'): void {
+  const grid = getBattleGrid(state, side);
+  const towers = state.towers.filter(t => {
+    const { side: tSide } = globalToLocal(t.col);
+    return tSide === side;
+  });
+  const costMap = buildBattleTowerCostMap(towers);
+
+  const path = findPath(grid, grid.spawn, grid.goal);
+
+  if (side === 'host') {
+    state.hostCachedPath = path;
+    state.hostTowerCostMap = costMap;
+    state.hostLockedCells = new Set();
+    computeBattleLockedCells(state, side);
+  } else {
+    state.guestCachedPath = path;
+    state.guestTowerCostMap = costMap;
+    state.guestLockedCells = new Set();
+    computeBattleLockedCells(state, side);
+  }
+}
+
+function buildBattleTowerCostMap(towers: TowerEntity[]): CostMap {
+  const map: CostMap = Array.from({ length: ROWS }, () =>
+    Array.from({ length: BATTLE_COLS }, () => 0)
+  );
+  for (const tower of towers) {
+    const { localCol } = globalToLocal(tower.col);
+    const effectiveRange = towerRange(tower);
+    const rangeInt = Math.ceil(effectiveRange);
+    for (let dr = -rangeInt; dr <= rangeInt; dr++) {
+      for (let dc = -rangeInt; dc <= rangeInt; dc++) {
+        const r = tower.row + dr;
+        const c = localCol + dc;
+        if (r < 0 || r >= ROWS || c < 0 || c >= BATTLE_COLS) continue;
+        const dist = Math.sqrt(dc * dc + dr * dr);
+        if (dist <= effectiveRange) {
+          const dangerWeight = (1 - dist / towerRange(tower)) * (towerDamage(tower) / towerFireRate(tower));
+          const row = map[r];
+          if (row) row[c] = (row[c] ?? 0) + dangerWeight;
+        }
+      }
+    }
+  }
+  return map;
+}
+
+function computeBattleLockedCells(state: GameState, side: 'host' | 'guest'): void {
+  const grid = getBattleGrid(state, side);
+  const path = side === 'host' ? state.hostCachedPath : state.guestCachedPath;
+  const locked = side === 'host' ? state.hostLockedCells : state.guestLockedCells;
+  if (!path) return;
+
+  for (const p of path) {
+    const cell = grid.getCell(p.col, p.row);
+    if (cell !== CellType.Empty) continue;
+    grid.setCell(p.col, p.row, CellType.Wall);
+    const alt = findPath(grid, grid.spawn, grid.goal);
+    grid.setCell(p.col, p.row, CellType.Empty);
+    if (!alt) {
+      locked.add(`${p.col},${p.row}`);
+    }
+  }
 }
 
 // ── Tower cost map for sneaker avoidance ──
@@ -298,6 +469,7 @@ function spendCoins(state: GameState, owner: 'host' | 'guest' | 'solo', amount: 
 
 /** Check if placement would block the path */
 export function canPlaceAt(state: GameState, col: number, row: number): boolean {
+  if (state.battleMode) return canPlaceBattle(state, col, row);
   if (!state.grid.canPlace(col, row)) return false;
   state.grid.setCell(col, row, CellType.Wall);
   const testPath = findPath(state.grid, state.grid.spawn, state.grid.goal);
@@ -305,7 +477,20 @@ export function canPlaceAt(state: GameState, col: number, row: number): boolean 
   return testPath !== null;
 }
 
+/** Battle-mode placement check using local coords */
+function canPlaceBattle(state: GameState, globalCol: number, row: number): boolean {
+  const { localCol, side } = globalToLocal(globalCol);
+  const grid = getBattleGrid(state, side);
+  if (!grid.canPlace(localCol, row)) return false;
+  grid.setCell(localCol, row, CellType.Wall);
+  const testPath = findPath(grid, grid.spawn, grid.goal);
+  grid.setCell(localCol, row, CellType.Empty);
+  return testPath !== null;
+}
+
 export function placeBuild(state: GameState, col: number, row: number, owner: 'host' | 'guest' | 'solo' = 'solo'): boolean {
+  if (state.battleMode) return placeBuildBattle(state, col, row, owner);
+
   if (!state.grid.canPlace(col, row)) return false;
   if (state.selectedBuild === null) return false;
 
@@ -342,6 +527,53 @@ export function placeBuild(state: GameState, col: number, row: number, owner: 'h
   return true;
 }
 
+/** Battle mode placement: territory-enforced, uses local grid coords */
+function placeBuildBattle(state: GameState, globalCol: number, row: number, owner: 'host' | 'guest' | 'solo'): boolean {
+  if (state.selectedBuild === null) return false;
+
+  // CoinTree is cut from battle mode
+  if (state.selectedBuild === TowerKind.CoinTree) return false;
+
+  // Territory enforcement
+  const { localCol, side } = globalToLocal(globalCol);
+  if (owner === 'host' && side !== 'host') return false;
+  if (owner === 'guest' && side !== 'guest') return false;
+
+  const grid = getBattleGrid(state, side);
+  if (!grid.canPlace(localCol, row)) return false;
+
+  const cost = state.selectedBuild === 'wall' ? WALL_COST : TOWER_DEFS[state.selectedBuild].cost;
+  if (getCoins(state, owner) < cost) return false;
+
+  // Tentatively place and check path
+  const cellType = state.selectedBuild === 'wall' ? CellType.Wall : CellType.Tower;
+  grid.setCell(localCol, row, cellType);
+  const testPath = findPath(grid, grid.spawn, grid.goal);
+  if (!testPath) {
+    grid.setCell(localCol, row, CellType.Empty);
+    return false;
+  }
+
+  spendCoins(state, owner, cost);
+  if (state.selectedBuild === 'wall') {
+    state.walls.push({ col: globalCol, row, owner });
+  } else {
+    state.towers.push({ col: globalCol, row, kind: state.selectedBuild, cooldown: 0, rangeLevel: 0, speedLevel: 0, damageLevel: 0, recoilTimer: 0, owner });
+  }
+
+  recalcBattlePath(state, side);
+
+  // Recalc paths for enemies on this side
+  for (const enemy of state.enemies) {
+    if (enemy.targetSide === side && enemy.kind !== EnemyKind.Wanderer) {
+      recalcBattleEnemyPath(state, enemy);
+    }
+  }
+
+  sfxPlace();
+  return true;
+}
+
 // ── Upgrades ──
 
 export function upgradeTower(state: GameState, tower: TowerEntity, stat: UpgradeStat): boolean {
@@ -351,10 +583,20 @@ export function upgradeTower(state: GameState, tower: TowerEntity, stat: Upgrade
   if (stat === 'range') tower.rangeLevel++;
   else if (stat === 'speed') tower.speedLevel++;
   else tower.damageLevel++;
-  // Recalc sneaker cost map
-  recalcPath(state);
-  for (const enemy of state.enemies) {
-    if (enemy.kind === EnemyKind.Sneaker) recalcEnemyPath(state, enemy);
+
+  if (state.battleMode) {
+    const { side } = globalToLocal(tower.col);
+    recalcBattlePath(state, side);
+    for (const enemy of state.enemies) {
+      if (enemy.targetSide === side && enemy.kind === EnemyKind.Sneaker) {
+        recalcBattleEnemyPath(state, enemy);
+      }
+    }
+  } else {
+    recalcPath(state);
+    for (const enemy of state.enemies) {
+      if (enemy.kind === EnemyKind.Sneaker) recalcEnemyPath(state, enemy);
+    }
   }
   sfxUpgrade();
   return true;
@@ -363,13 +605,28 @@ export function upgradeTower(state: GameState, tower: TowerEntity, stat: Upgrade
 export function sellTower(state: GameState, tower: TowerEntity): void {
   sfxSell();
   addCoins(state, tower.owner, sellValue(tower));
-  state.grid.setCell(tower.col, tower.row, CellType.Empty);
-  state.towers = state.towers.filter((t) => t !== tower);
-  state.selectedTower = null;
-  recalcPath(state);
-  for (const enemy of state.enemies) {
-    if (enemy.kind !== EnemyKind.Wanderer) {
-      recalcEnemyPath(state, enemy);
+
+  if (state.battleMode) {
+    const { localCol, side } = globalToLocal(tower.col);
+    const grid = getBattleGrid(state, side);
+    grid.setCell(localCol, tower.row, CellType.Empty);
+    state.towers = state.towers.filter((t) => t !== tower);
+    state.selectedTower = null;
+    recalcBattlePath(state, side);
+    for (const enemy of state.enemies) {
+      if (enemy.targetSide === side && enemy.kind !== EnemyKind.Wanderer) {
+        recalcBattleEnemyPath(state, enemy);
+      }
+    }
+  } else {
+    state.grid.setCell(tower.col, tower.row, CellType.Empty);
+    state.towers = state.towers.filter((t) => t !== tower);
+    state.selectedTower = null;
+    recalcPath(state);
+    for (const enemy of state.enemies) {
+      if (enemy.kind !== EnemyKind.Wanderer) {
+        recalcEnemyPath(state, enemy);
+      }
     }
   }
 }
@@ -377,13 +634,28 @@ export function sellTower(state: GameState, tower: TowerEntity): void {
 export function sellWall(state: GameState, wall: WallEntity): void {
   sfxSell();
   addCoins(state, wall.owner, Math.floor(WALL_COST * 0.6));
-  state.grid.setCell(wall.col, wall.row, CellType.Empty);
-  state.walls = state.walls.filter((w) => w !== wall);
-  state.selectedWall = null;
-  recalcPath(state);
-  for (const enemy of state.enemies) {
-    if (enemy.kind !== EnemyKind.Wanderer) {
-      recalcEnemyPath(state, enemy);
+
+  if (state.battleMode) {
+    const { localCol, side } = globalToLocal(wall.col);
+    const grid = getBattleGrid(state, side);
+    grid.setCell(localCol, wall.row, CellType.Empty);
+    state.walls = state.walls.filter((w) => w !== wall);
+    state.selectedWall = null;
+    recalcBattlePath(state, side);
+    for (const enemy of state.enemies) {
+      if (enemy.targetSide === side && enemy.kind !== EnemyKind.Wanderer) {
+        recalcBattleEnemyPath(state, enemy);
+      }
+    }
+  } else {
+    state.grid.setCell(wall.col, wall.row, CellType.Empty);
+    state.walls = state.walls.filter((w) => w !== wall);
+    state.selectedWall = null;
+    recalcPath(state);
+    for (const enemy of state.enemies) {
+      if (enemy.kind !== EnemyKind.Wanderer) {
+        recalcEnemyPath(state, enemy);
+      }
     }
   }
 }
@@ -477,6 +749,12 @@ export function update(state: GameState, dt: number): void {
 
   if (state.phase === GamePhase.Lost) return;
 
+  // Battle mode has its own update path
+  if (state.phase === GamePhase.Battle) {
+    updateBattle(state, dt);
+    return;
+  }
+
   // Wave countdown
   if (state.waveCountdown > 0) {
     state.waveCountdown -= dt;
@@ -557,6 +835,285 @@ export function update(state: GameState, dt: number): void {
     saveHighScore(state.score);
     sfxLose();
   }
+}
+
+// ── Battle mode update ──
+
+function updateBattle(state: GameState, dt: number): void {
+  state.matchClock += dt;
+
+  // Tier unlocks and drip rate updates
+  for (const [time, kinds, drip] of BATTLE_TIERS) {
+    if (state.matchClock >= time) {
+      for (const kind of kinds) {
+        if (!state.unlockedTiers.includes(kind)) {
+          state.unlockedTiers.push(kind);
+          const name = ENEMY_DEFS[kind].name;
+          state.notifications.push({ text: `${name} unlocked!`, timer: 3 });
+        }
+      }
+      state.offenseDrip = drip;
+    }
+  }
+
+  // Offense meter passive drip
+  state.hostOffense += state.offenseDrip * dt;
+  state.guestOffense += state.offenseDrip * dt;
+
+  // Process send queues — spawn enemies on the opponent's side
+  processSendQueue(state, 'host', dt);
+  processSendQueue(state, 'guest', dt);
+
+  // Update enemies (battle-aware)
+  updateBattleEnemies(state, dt);
+
+  // Update towers (territory-aware: only target enemies on own side)
+  updateBattleTowers(state, dt);
+
+  // Update projectiles
+  updateProjectiles(state, dt);
+
+  // Update floating damage
+  state.floatingDamage = state.floatingDamage.filter((d) => {
+    d.age += dt;
+    return d.age < d.lifetime;
+  });
+
+  // Check win/loss
+  if (state.hostLives <= 0) {
+    state.hostLives = 0;
+    state.phase = GamePhase.Lost;
+    sfxLose();
+  } else if (state.guestLives <= 0) {
+    state.guestLives = 0;
+    state.phase = GamePhase.Lost;
+    sfxWin();
+  }
+}
+
+/** Process a player's send queue: spawns enemies on the opponent's half */
+function processSendQueue(state: GameState, sender: 'host' | 'guest', dt: number): void {
+  const queue = sender === 'host' ? state.hostSendQueue : state.guestSendQueue;
+  if (queue.length === 0) return;
+
+  if (sender === 'host') {
+    state.hostSendTimer -= dt;
+    if (state.hostSendTimer <= 0) {
+      const entry = queue.shift()!;
+      spawnBattleEnemy(state, entry.kind, 'guest'); // host sends to guest's board
+      state.hostSendTimer = BATTLE_SEND_SPACING;
+    }
+  } else {
+    state.guestSendTimer -= dt;
+    if (state.guestSendTimer <= 0) {
+      const entry = queue.shift()!;
+      spawnBattleEnemy(state, entry.kind, 'host'); // guest sends to host's board
+      state.guestSendTimer = BATTLE_SEND_SPACING;
+    }
+  }
+}
+
+/** Spawn a battle enemy on the given target side */
+function spawnBattleEnemy(state: GameState, kind: EnemyKind, targetSide: 'host' | 'guest'): void {
+  const def = ENEMY_DEFS[kind];
+  const grid = getBattleGrid(state, targetSide);
+  const spawn = grid.spawn;
+
+  // Convert local spawn to global pixel position
+  const globalCol = localToGlobal(spawn.col, targetSide);
+  const hp = def.baseHp; // no HP multiplier in battle mode v1
+
+  const enemy: EnemyEntity = {
+    id: nextEnemyId++,
+    kind,
+    x: globalCol * TILE + TILE / 2,
+    y: spawn.row * TILE + TILE / 2,
+    hp,
+    maxHp: hp,
+    speed: def.speed,
+    path: [],
+    pathIndex: 0,
+    reward: BATTLE_KILL_BOUNTIES[kind],
+    wanderAngle: 0,
+    hitFlashTimer: 0,
+    slowTimer: 0,
+    speedMultiplier: 1,
+    healCooldown: 0,
+    targetSide,
+  };
+
+  recalcBattleEnemyPath(state, enemy);
+  state.enemies.push(enemy);
+}
+
+/** Recalc path for a battle enemy using its target side's grid (local coords) */
+function recalcBattleEnemyPath(state: GameState, enemy: EnemyEntity): void {
+  const side = enemy.targetSide!;
+  const grid = getBattleGrid(state, side);
+  // Convert global pixel pos to local tile
+  const globalCol = Math.floor(enemy.x / TILE);
+  const { localCol } = globalToLocal(globalCol);
+  const row = Math.floor(enemy.y / TILE);
+  const currentTile: Position = { col: localCol, row };
+
+  const costMap = enemy.kind === EnemyKind.Sneaker
+    ? (side === 'host' ? state.hostTowerCostMap : state.guestTowerCostMap)
+    : undefined;
+  const path = findPath(grid, currentTile, grid.goal, costMap);
+  if (path) {
+    enemy.path = path;
+    enemy.pathIndex = 0;
+  }
+}
+
+function updateBattleEnemies(state: GameState, dt: number): void {
+  const toRemove: number[] = [];
+
+  for (const enemy of state.enemies) {
+    if (enemy.hitFlashTimer > 0) enemy.hitFlashTimer -= dt;
+    if (enemy.slowTimer > 0) {
+      enemy.slowTimer -= dt;
+      if (enemy.slowTimer <= 0) enemy.speedMultiplier = 1;
+    }
+
+    // Healer logic
+    if (enemy.kind === EnemyKind.Healer) {
+      enemy.healCooldown -= dt;
+      if (enemy.healCooldown <= 0) {
+        enemy.healCooldown = 1.5;
+        for (const other of state.enemies) {
+          if (other.id === enemy.id || other.targetSide !== enemy.targetSide) continue;
+          const edx = other.x - enemy.x;
+          const edy = other.y - enemy.y;
+          if (Math.sqrt(edx * edx + edy * edy) <= 2 * TILE) {
+            other.hp = Math.min(other.maxHp, other.hp + 5);
+          }
+        }
+        sfxHealPulse();
+      }
+    }
+
+    const side = enemy.targetSide!;
+    if (enemy.path.length > 0) {
+      const target = enemy.path[enemy.pathIndex];
+      if (!target) {
+        // Reached goal — deduct life from the target side's player
+        if (side === 'host') state.hostLives--;
+        else state.guestLives--;
+        sfxLifeLost();
+        effects.triggerShake(5, 0.15);
+        toRemove.push(enemy.id);
+        continue;
+      }
+
+      // Convert local path target to global pixel position
+      const globalCol = localToGlobal(target.col, side);
+      const tx = globalCol * TILE + TILE / 2;
+      const ty = target.row * TILE + TILE / 2;
+      const dx = tx - enemy.x;
+      const dy = ty - enemy.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 2) {
+        enemy.pathIndex++;
+        if (enemy.pathIndex >= enemy.path.length) {
+          if (side === 'host') state.hostLives--;
+          else state.guestLives--;
+          sfxLifeLost();
+          effects.triggerShake(5, 0.15);
+          toRemove.push(enemy.id);
+          continue;
+        }
+      } else {
+        const move = enemy.speed * enemy.speedMultiplier * TILE * dt;
+        enemy.x += (dx / dist) * move;
+        enemy.y += (dy / dist) * move;
+      }
+    } else {
+      recalcBattleEnemyPath(state, enemy);
+    }
+  }
+
+  state.enemies = state.enemies.filter((e) => !toRemove.includes(e.id));
+}
+
+/** Battle-mode tower update: towers only target enemies on their own side */
+function updateBattleTowers(state: GameState, dt: number): void {
+  for (const tower of state.towers) {
+    if (tower.recoilTimer > 0) tower.recoilTimer -= dt;
+    if (tower.kind === TowerKind.CoinTree) continue;
+
+    tower.cooldown -= dt;
+    if (tower.cooldown > 0) continue;
+
+    const def = TOWER_DEFS[tower.kind];
+    const cx = tower.col * TILE + TILE / 2;
+    const cy = tower.row * TILE + TILE / 2;
+    const rangePixels = towerRange(tower) * TILE;
+
+    // Determine which side this tower is on
+    const { side: towerSide } = globalToLocal(tower.col);
+
+    let nearest: EnemyEntity | null = null;
+    let nearestDist = Infinity;
+
+    for (const enemy of state.enemies) {
+      // Only target enemies on the same side
+      if (enemy.targetSide !== towerSide) continue;
+      const dx = enemy.x - cx;
+      const dy = enemy.y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist <= rangePixels && dist < nearestDist) {
+        nearest = enemy;
+        nearestDist = dist;
+      }
+    }
+
+    if (nearest) {
+      tower.cooldown = towerFireRate(tower);
+      tower.recoilTimer = 0.08;
+
+      if (tower.kind === TowerKind.SlopCannon) sfxSlopShoot();
+      else if (tower.kind === TowerKind.Zapper) sfxZapShoot();
+      else if (tower.kind === TowerKind.Frost) sfxFrostHit();
+      else if (tower.kind === TowerKind.Chain) sfxChainBounce();
+      else sfxShoot();
+
+      state.projectiles.push({
+        x: cx,
+        y: cy,
+        targetId: nearest.id,
+        damage: towerDamage(tower),
+        splash: def.splash,
+        speed: 300,
+        color: def.color,
+        sourceKind: tower.kind,
+        sourceOwner: tower.owner,
+        trail: [],
+      });
+    }
+  }
+}
+
+/** Queue a send in battle mode. Returns true if successful. */
+export function battleSend(state: GameState, kind: EnemyKind, sender: 'host' | 'guest'): boolean {
+  if (!state.battleMode || state.phase !== GamePhase.Battle) return false;
+  if (!state.unlockedTiers.includes(kind)) return false;
+
+  const cost = BATTLE_SEND_COSTS[kind];
+  if (cost === undefined) return false;
+
+  const offense = sender === 'host' ? state.hostOffense : state.guestOffense;
+  if (offense < cost) return false;
+
+  const queue = sender === 'host' ? state.hostSendQueue : state.guestSendQueue;
+  if (queue.length >= BATTLE_MAX_QUEUE) return false;
+
+  if (sender === 'host') state.hostOffense -= cost;
+  else state.guestOffense -= cost;
+
+  queue.push({ kind });
+  return true;
 }
 
 function updateEnemies(state: GameState, dt: number): void {
@@ -773,6 +1330,8 @@ function updateProjectiles(state: GameState, dt: number): void {
       if (proj.splash > 0) {
         const splashPixels = proj.splash * TILE;
         for (const enemy of state.enemies) {
+          // In battle mode, splash can't cross the seam
+          if (state.battleMode && enemy.targetSide !== target.targetSide) continue;
           const edx = enemy.x - target.x;
           const edy = enemy.y - target.y;
           const edist = Math.sqrt(edx * edx + edy * edy);
@@ -810,6 +1369,8 @@ function updateProjectiles(state: GameState, dt: number): void {
           let closestDist = Infinity;
           for (const enemy of state.enemies) {
             if (hitIds.has(enemy.id)) continue;
+            // In battle mode, chain can't bounce across the seam
+            if (state.battleMode && enemy.targetSide !== target.targetSide) continue;
             const edx = enemy.x - lastX;
             const edy = enemy.y - lastY;
             const edist = Math.sqrt(edx * edx + edy * edy);
@@ -858,6 +1419,13 @@ function damageEnemy(state: GameState, enemy: EnemyEntity, damage: number, kille
     addCoins(state, killer, enemy.reward);
     state.enemiesKilled++;
     state.score += 10;
+
+    // Battle mode: +1 offense point per kill to the killer
+    if (state.battleMode && killer !== 'solo') {
+      if (killer === 'host') state.hostOffense += 1;
+      else state.guestOffense += 1;
+    }
+
     sfxEnemyDeath();
     effects.spawnDeathEffect(enemy.x, enemy.y, ENEMY_DEFS[enemy.kind].color);
     effects.triggerShake(1, 0.05);
@@ -900,6 +1468,24 @@ interface SerializedState {
   gameSpeed: number;
   displayCoins: number;
   displayLives: number;
+
+  // Battle mode
+  battleMode: boolean;
+  matchClock: number;
+  hostOffense: number;
+  guestOffense: number;
+  offenseDrip: number;
+  hostSendQueue: SendEntry[];
+  guestSendQueue: SendEntry[];
+  hostLives: number;
+  guestLives: number;
+  unlockedTiers: EnemyKind[];
+  hostGridCells: number[][] | null;
+  guestGridCells: number[][] | null;
+  hostCachedPath: Position[] | null;
+  guestCachedPath: Position[] | null;
+  hostLockedCells: string[];
+  guestLockedCells: string[];
 }
 
 function serializeState(state: GameState): SerializedState {
@@ -930,6 +1516,24 @@ function serializeState(state: GameState): SerializedState {
     gameSpeed: state.gameSpeed,
     displayCoins: state.displayCoins,
     displayLives: state.displayLives,
+
+    // Battle mode
+    battleMode: state.battleMode,
+    matchClock: state.matchClock,
+    hostOffense: state.hostOffense,
+    guestOffense: state.guestOffense,
+    offenseDrip: state.offenseDrip,
+    hostSendQueue: state.hostSendQueue,
+    guestSendQueue: state.guestSendQueue,
+    hostLives: state.hostLives,
+    guestLives: state.guestLives,
+    unlockedTiers: state.unlockedTiers,
+    hostGridCells: state.hostGrid ? state.hostGrid.cells.map((row) => [...row]) : null,
+    guestGridCells: state.guestGrid ? state.guestGrid.cells.map((row) => [...row]) : null,
+    hostCachedPath: state.hostCachedPath,
+    guestCachedPath: state.guestCachedPath,
+    hostLockedCells: [...state.hostLockedCells],
+    guestLockedCells: [...state.guestLockedCells],
   };
 }
 
@@ -968,6 +1572,44 @@ function applySerializedState(state: GameState, s: SerializedState): void {
   state.gameSpeed = s.gameSpeed;
   state.displayCoins = s.displayCoins;
   state.displayLives = s.displayLives;
+
+  // Battle mode
+  state.battleMode = s.battleMode;
+  state.matchClock = s.matchClock;
+  state.hostOffense = s.hostOffense;
+  state.guestOffense = s.guestOffense;
+  state.offenseDrip = s.offenseDrip;
+  state.hostSendQueue = s.hostSendQueue;
+  state.guestSendQueue = s.guestSendQueue;
+  state.hostLives = s.hostLives;
+  state.guestLives = s.guestLives;
+  state.unlockedTiers = s.unlockedTiers;
+  state.hostCachedPath = s.hostCachedPath;
+  state.guestCachedPath = s.guestCachedPath;
+  state.hostLockedCells = new Set(s.hostLockedCells);
+  state.guestLockedCells = new Set(s.guestLockedCells);
+
+  // Rebuild battle grids from serialized cells
+  if (s.hostGridCells && state.hostGrid) {
+    for (let r = 0; r < s.hostGridCells.length; r++) {
+      const row = s.hostGridCells[r];
+      if (row) {
+        for (let c = 0; c < row.length; c++) {
+          state.hostGrid.cells[r]![c] = row[c]!;
+        }
+      }
+    }
+  }
+  if (s.guestGridCells && state.guestGrid) {
+    for (let r = 0; r < s.guestGridCells.length; r++) {
+      const row = s.guestGridCells[r];
+      if (row) {
+        for (let c = 0; c < row.length; c++) {
+          state.guestGrid.cells[r]![c] = row[c]!;
+        }
+      }
+    }
+  }
 }
 
 // ── Game controller ──
@@ -980,12 +1622,18 @@ export class Game {
   peer: PeerConnection | null;
   broadcastTimer = 0;
 
-  constructor(canvas: HTMLCanvasElement, role: Role = 'solo', peer: PeerConnection | null = null) {
+  constructor(canvas: HTMLCanvasElement, role: Role = 'solo', peer: PeerConnection | null = null, battleMode = false) {
     this.role = role;
     this.peer = peer;
     this.state = createGameState();
     this.renderer = new Renderer(canvas);
-    recalcPath(this.state);
+
+    if (battleMode) {
+      initBattleMode(this.state);
+    } else {
+      recalcPath(this.state);
+    }
+
     this.setupInput(canvas);
 
     if (peer) {
@@ -1029,10 +1677,15 @@ export class Game {
       effects.update(dt);
     }
 
-    // Set coins for HUD display
-    if (this.role === 'host') this.state.coins = this.state.hostCoins;
-    else if (this.role === 'guest') {
+    // Set coins, lives, and view side for HUD display
+    if (this.role === 'host') {
+      this.state.coins = this.state.hostCoins;
+      this.state.viewSide = 'host';
+      if (this.state.battleMode) this.state.lives = this.state.hostLives;
+    } else if (this.role === 'guest') {
       this.state.coins = this.state.guestCoins;
+      this.state.viewSide = 'guest';
+      if (this.state.battleMode) this.state.lives = this.state.guestLives;
       // Guest needs its own display lerp since update() doesn't run
       this.state.gameTime += dt;
       const lerpRate = 200 * dt;
@@ -1120,6 +1773,9 @@ export class Game {
         (t) => t.col === (msg.col as number) && t.row === (msg.row as number) && t.owner === 'guest'
       );
       if (tower) upgradeTower(this.state, tower, msg.stat as UpgradeStat);
+    } else if (cmd === 'send') {
+      // Battle mode: guest sends enemy to host's board
+      battleSend(this.state, msg.enemyKind as EnemyKind, 'guest');
     } else if (cmd === 'speed') {
       this.state.gameSpeed = msg.speed as number;
     } else if (cmd === 'autoStart') {
@@ -1130,12 +1786,17 @@ export class Game {
   }
 
   private resetGame(): void {
+    const wasBattle = this.state.battleMode;
     const wasAudioInit = this.state.audioInitialized;
     const wasMusic = this.state.musicOn;
     this.state = createGameState();
     this.state.audioInitialized = wasAudioInit;
     this.state.musicOn = wasMusic;
-    recalcPath(this.state);
+    if (wasBattle) {
+      initBattleMode(this.state);
+    } else {
+      recalcPath(this.state);
+    }
     if (this.role === 'host') this.broadcastState();
   }
 
@@ -1204,35 +1865,37 @@ export class Game {
         return;
       }
 
-      // Speed buttons
-      const spd = this.renderer.mouseToSpeedBtn(e);
-      if (spd > 0) {
-        if (isGuest) {
-          this.sendCmd({ type: 'cmd', cmd: 'speed', speed: spd });
-        } else {
-          this.state.gameSpeed = spd;
+      // Speed buttons (not in battle mode)
+      if (!this.state.battleMode) {
+        const spd = this.renderer.mouseToSpeedBtn(e);
+        if (spd > 0) {
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'speed', speed: spd });
+          } else {
+            this.state.gameSpeed = spd;
+          }
+          return;
         }
-        return;
-      }
 
-      // Auto-start
-      if (this.renderer.mouseToAutoStart(e)) {
-        if (isGuest) {
-          this.sendCmd({ type: 'cmd', cmd: 'autoStart' });
-        } else {
-          this.state.autoStart = !this.state.autoStart;
+        // Auto-start
+        if (this.renderer.mouseToAutoStart(e)) {
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'autoStart' });
+          } else {
+            this.state.autoStart = !this.state.autoStart;
+          }
+          return;
         }
-        return;
-      }
 
-      // Start wave
-      if (this.renderer.mouseToStartBtn(e)) {
-        if (isGuest) {
-          this.sendCmd({ type: 'cmd', cmd: 'startWave' });
-        } else {
-          startWave(this.state);
+        // Start wave
+        if (this.renderer.mouseToStartBtn(e)) {
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'startWave' });
+          } else {
+            startWave(this.state);
+          }
+          return;
         }
-        return;
       }
 
       // Tower upgrade/sell
@@ -1268,14 +1931,38 @@ export class Game {
         }
       }
 
+      // Battle mode: offense/defense toggle button
+      if (this.state.battleMode && this.renderer.mouseToModeToggle(e)) {
+        this.state.offenseMode = !this.state.offenseMode;
+        this.state.selectedBuild = null;
+        return;
+      }
+
       // Build bar buttons (local UI selection for both roles)
       if (!this.state.selectedTower && !this.state.selectedWall) {
-        const btnIdx = this.renderer.mouseToButton(e);
+        const btnCount = this.state.battleMode
+          ? (this.state.offenseMode ? 5 : 6)  // offense: 5 enemy types, defense: 6 (no CoinTree)
+          : 7;
+        const btnIdx = this.renderer.mouseToButton(e, btnCount);
         if (btnIdx >= 0) {
-          const builds: ('wall' | TowerKind)[] = [
-            'wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
-            TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree,
-          ];
+          // Battle mode offense bar: send enemies
+          if (this.state.battleMode && this.state.offenseMode) {
+            const sendableKinds = [EnemyKind.Walker, EnemyKind.Sprinter, EnemyKind.Sneaker, EnemyKind.Tank, EnemyKind.Healer];
+            const kind = sendableKinds[btnIdx];
+            if (kind !== undefined) {
+              if (isGuest) {
+                this.sendCmd({ type: 'cmd', cmd: 'send', enemyKind: kind });
+              } else {
+                battleSend(this.state, kind, 'host');
+              }
+            }
+            return;
+          }
+
+          // Defense bar
+          const builds: ('wall' | TowerKind)[] = this.state.battleMode
+            ? ['wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper, TowerKind.Frost, TowerKind.Chain]
+            : ['wall', TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper, TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree];
           const clicked = builds[btnIdx];
           if (clicked !== undefined) {
             this.state.selectedBuild = this.state.selectedBuild === clicked ? null : clicked;
@@ -1333,18 +2020,44 @@ export class Game {
         this.state.selectedTower = null;
         this.state.selectedWall = null;
       }
+
+      // Tab: toggle offense/defense mode in battle
+      if (e.key === 'Tab' && this.state.battleMode) {
+        e.preventDefault();
+        this.state.offenseMode = !this.state.offenseMode;
+        this.state.selectedBuild = null;
+        return;
+      }
+
       if (e.key >= '1' && e.key <= '7') {
         this.state.selectedTower = null;
         this.state.selectedWall = null;
       }
+
+      // Battle mode offense: number keys send enemies
+      if (this.state.battleMode && this.state.offenseMode) {
+        const sendableKinds = [EnemyKind.Walker, EnemyKind.Sprinter, EnemyKind.Sneaker, EnemyKind.Tank, EnemyKind.Healer];
+        const idx = parseInt(e.key) - 1;
+        if (idx >= 0 && idx < sendableKinds.length) {
+          const kind = sendableKinds[idx]!;
+          if (isGuest) {
+            this.sendCmd({ type: 'cmd', cmd: 'send', enemyKind: kind });
+          } else {
+            battleSend(this.state, kind, 'host');
+          }
+        }
+        return;
+      }
+
+      // Defense mode keys
       if (e.key === '1') this.state.selectedBuild = 'wall';
       if (e.key === '2') this.state.selectedBuild = TowerKind.PeaShooter;
       if (e.key === '3') this.state.selectedBuild = TowerKind.SlopCannon;
       if (e.key === '4') this.state.selectedBuild = TowerKind.Zapper;
       if (e.key === '5') this.state.selectedBuild = TowerKind.Frost;
       if (e.key === '6') this.state.selectedBuild = TowerKind.Chain;
-      if (e.key === '7') this.state.selectedBuild = TowerKind.CoinTree;
-      if (e.key === ' ') {
+      if (!this.state.battleMode && e.key === '7') this.state.selectedBuild = TowerKind.CoinTree;
+      if (e.key === ' ' && !this.state.battleMode) {
         e.preventDefault();
         if (isGuest) {
           this.sendCmd({ type: 'cmd', cmd: 'startWave' });

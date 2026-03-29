@@ -4,13 +4,17 @@ export class Grid {
   cells: CellType[][];
   spawn: Position;
   goal: Position;
+  cols: number;
+  rows: number;
 
-  constructor() {
-    this.cells = Array.from({ length: ROWS }, () =>
-      Array.from({ length: COLS }, () => CellType.Empty)
+  constructor(cols: number = COLS, rows: number = ROWS, spawn?: Position, goal?: Position) {
+    this.cols = cols;
+    this.rows = rows;
+    this.cells = Array.from({ length: rows }, () =>
+      Array.from({ length: cols }, () => CellType.Empty)
     );
-    this.spawn = { col: 0, row: 0 };
-    this.goal = { col: COLS - 1, row: ROWS - 1 };
+    this.spawn = spawn ?? { col: 0, row: 0 };
+    this.goal = goal ?? { col: cols - 1, row: rows - 1 };
     this.cells[this.spawn.row]![this.spawn.col] = CellType.Spawn;
     this.cells[this.goal.row]![this.goal.col] = CellType.Goal;
   }
@@ -25,7 +29,7 @@ export class Grid {
   }
 
   isInBounds(col: number, row: number): boolean {
-    return col >= 0 && col < COLS && row >= 0 && row < ROWS;
+    return col >= 0 && col < this.cols && row >= 0 && row < this.rows;
   }
 
   canPlace(col: number, row: number): boolean {

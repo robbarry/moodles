@@ -1,13 +1,14 @@
 import {
   COLS, ROWS, TILE, SCALE, CANVAS_W, CANVAS_H,
   CellType, HUD_TOP_H, HUD_BOT_H,
-  TowerKind, TOWER_DEFS, GamePhase, WALL_COST,
+  TowerKind, TOWER_DEFS, EnemyKind, ENEMY_DEFS, GamePhase, WALL_COST,
+  BATTLE_COLS, BATTLE_SEND_COSTS, BATTLE_MAX_QUEUE, BATTLE_TIERS,
 } from './types';
 import {
   spawnSprite, goalSprite, wallSprite,
   TOWER_SPRITES, ENEMY_SPRITES,
 } from './sprites';
-import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, getCoins, MAX_UPGRADE, effects, canPlaceAt } from './game';
+import { type GameState, type UpgradeStat, upgradeCost, towerRange, towerFireRate, towerDamage, sellValue, getCoins, MAX_UPGRADE, effects, canPlaceAt, globalToLocal } from './game';
 
 const TOTAL_H = CANVAS_H + HUD_TOP_H + HUD_BOT_H;
 
@@ -53,17 +54,26 @@ export class Renderer {
   }
 
   /** Check if mouse is clicking a build-bar button, return index or -1 */
-  mouseToButton(e: MouseEvent): number {
+  mouseToButton(e: MouseEvent, count = 7): number {
     const { x, y } = this.mouseToLogical(e);
     const barY = HUD_TOP_H + CANVAS_H;
     if (y < barY || y > barY + HUD_BOT_H) return -1;
-    const count = 7;
     for (let i = 0; i < count; i++) {
       const left = Math.floor(i * CANVAS_W / count);
       const right = Math.floor((i + 1) * CANVAS_W / count);
       if (x >= left && x < right) return i;
     }
     return -1;
+  }
+
+  /** Check if mouse clicks the offense/defense mode toggle in battle mode */
+  mouseToModeToggle(e: MouseEvent): boolean {
+    const { x, y } = this.mouseToLogical(e);
+    const barY = HUD_TOP_H + CANVAS_H;
+    // Toggle button is at top-right of build bar
+    const btnX = CANVAS_W - 80;
+    const btnY = barY + 6;
+    return x >= btnX && x < btnX + 74 && y >= btnY && y < btnY + HUD_BOT_H - 12;
   }
 
   /** Check if mouse clicks the Start Wave button */
@@ -149,7 +159,16 @@ export class Renderer {
       for (let c = 0; c < COLS; c++) {
         const x = c * TILE;
         const y = r * TILE;
-        const cell = state.grid.getCell(c, r);
+
+        // In battle mode, look up cells from the correct half-grid
+        let cell: CellType | undefined;
+        if (state.battleMode) {
+          const { localCol, side } = globalToLocal(c);
+          const grid = side === 'host' ? state.hostGrid : state.guestGrid;
+          cell = grid?.getCell(localCol, r);
+        } else {
+          cell = state.grid.getCell(c, r);
+        }
 
         // Background tile
         ctx.fillStyle = (c + r) % 2 === 0 ? '#2d2d44' : '#252540';
@@ -158,7 +177,6 @@ export class Renderer {
         // Cell contents
         if (cell === CellType.Spawn) {
           ctx.drawImage(spawnSprite, x, y);
-          // Pulse
           ctx.globalAlpha = 0.15 + 0.1 * Math.sin(state.gameTime * 4);
           ctx.fillStyle = '#a5d6a7';
           ctx.fillRect(x, y, TILE, TILE);
@@ -175,8 +193,29 @@ export class Renderer {
       }
     }
 
+    // ── Battle mode: dividing line ──
+    if (state.battleMode) {
+      const seamX = BATTLE_COLS * TILE;
+      ctx.strokeStyle = '#ff5722';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(seamX, 0);
+      ctx.lineTo(seamX, ROWS * TILE);
+      ctx.stroke();
+
+      // Side labels
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '10px monospace';
+      ctx.fillText('HOST', 4, 12);
+      ctx.fillText('GUEST', seamX + 4, 12);
+    }
+
     // ── Path overlay ──
-    if (state.cachedPath && state.cachedPath.length > 1) {
+    if (state.battleMode) {
+      // Draw paths for both halves
+      this.drawBattlePath(state, 'host');
+      this.drawBattlePath(state, 'guest');
+    } else if (state.cachedPath && state.cachedPath.length > 1) {
       for (const p of state.cachedPath) {
         const cell = state.grid.getCell(p.col, p.row);
         if (cell === CellType.Spawn || cell === CellType.Goal) continue;
@@ -408,6 +447,11 @@ export class Renderer {
     ctx.fillStyle = '#16213e';
     ctx.fillRect(0, 0, CANVAS_W, HUD_TOP_H);
 
+    if (state.battleMode) {
+      this.drawBattleHud(state);
+      return;
+    }
+
     ctx.font = '11px monospace';
     ctx.fillStyle = Math.round(state.displayLives) < state.lives ? '#4caf50' : Math.round(state.displayLives) > state.lives ? '#f44336' : '#eee';
     ctx.fillText(`HP:${Math.round(state.displayLives)}`, 8, 26);
@@ -489,10 +533,16 @@ export class Renderer {
       return;
     }
 
-    const allTowerKinds: TowerKind[] = [
-      TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper,
-      TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree,
-    ];
+    // Battle mode: offense bar
+    if (state.battleMode && state.offenseMode) {
+      this.drawOffenseBar(state, barY);
+      return;
+    }
+
+    // Defense bar (normal or battle)
+    const allTowerKinds: TowerKind[] = state.battleMode
+      ? [TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper, TowerKind.Frost, TowerKind.Chain]
+      : [TowerKind.PeaShooter, TowerKind.SlopCannon, TowerKind.Zapper, TowerKind.Frost, TowerKind.Chain, TowerKind.CoinTree];
     const items: { label: string; cost: number; key: 'wall' | TowerKind }[] = [
       { label: 'Wall', cost: WALL_COST, key: 'wall' as const },
       ...allTowerKinds.map((k) => ({
@@ -524,6 +574,11 @@ export class Renderer {
         ctx.lineWidth = 2;
         ctx.strokeRect(x + 1, barY + 4, w - 2, HUD_BOT_H - 8);
       }
+    }
+
+    // Offense/Defense toggle button for battle mode
+    if (state.battleMode) {
+      this.drawModeToggle(barY, false);
     }
   }
 
@@ -605,23 +660,40 @@ export class Renderer {
 
     const cy = TOTAL_H / 2;
 
-    ctx.fillStyle = '#f44336';
-    ctx.font = 'bold 32px monospace';
-    const text = 'GAME OVER';
-    const tw = ctx.measureText(text).width;
-    ctx.fillText(text, (CANVAS_W - tw) / 2, cy - 40);
+    if (state.battleMode) {
+      // Battle mode: show winner/loser
+      const hostWon = state.guestLives <= 0;
+      ctx.fillStyle = '#ffeb3b';
+      ctx.font = 'bold 28px monospace';
+      const text = hostWon ? 'HOST WINS!' : 'GUEST WINS!';
+      const tw = ctx.measureText(text).width;
+      ctx.fillText(text, (CANVAS_W - tw) / 2, cy - 30);
 
-    ctx.fillStyle = '#eee';
-    ctx.font = '14px monospace';
-    const waveTxt = `Wave ${state.currentWave}  Score: ${state.score}`;
-    const ww = ctx.measureText(waveTxt).width;
-    ctx.fillText(waveTxt, (CANVAS_W - ww) / 2, cy - 12);
+      ctx.fillStyle = '#eee';
+      ctx.font = '14px monospace';
+      const clock = formatClock(state.matchClock);
+      const detail = `Match time: ${clock}`;
+      const dw = ctx.measureText(detail).width;
+      ctx.fillText(detail, (CANVAS_W - dw) / 2, cy - 4);
+    } else {
+      ctx.fillStyle = '#f44336';
+      ctx.font = 'bold 32px monospace';
+      const text = 'GAME OVER';
+      const tw = ctx.measureText(text).width;
+      ctx.fillText(text, (CANVAS_W - tw) / 2, cy - 40);
 
-    ctx.fillStyle = '#aaa';
-    ctx.font = '12px monospace';
-    const hiTxt = `High Score: ${state.highScore}`;
-    const hw = ctx.measureText(hiTxt).width;
-    ctx.fillText(hiTxt, (CANVAS_W - hw) / 2, cy + 6);
+      ctx.fillStyle = '#eee';
+      ctx.font = '14px monospace';
+      const waveTxt = `Wave ${state.currentWave}  Score: ${state.score}`;
+      const ww = ctx.measureText(waveTxt).width;
+      ctx.fillText(waveTxt, (CANVAS_W - ww) / 2, cy - 12);
+
+      ctx.fillStyle = '#aaa';
+      ctx.font = '12px monospace';
+      const hiTxt = `High Score: ${state.highScore}`;
+      const hw = ctx.measureText(hiTxt).width;
+      ctx.fillText(hiTxt, (CANVAS_W - hw) / 2, cy + 6);
+    }
 
     // Restart button
     const btnW = 140;
@@ -650,4 +722,186 @@ export class Renderer {
     const tw = ctx.measureText(text).width;
     ctx.fillText(text, (CANVAS_W - tw) / 2, cy + 5);
   }
+
+  // ── Battle mode rendering helpers ──
+
+  private drawBattleHud(state: GameState): void {
+    const ctx = this.ctx;
+    const isHost = state.viewSide === 'host';
+    const myLives = isHost ? state.hostLives : state.guestLives;
+    const oppLives = isHost ? state.guestLives : state.hostLives;
+    const myOffense = isHost ? state.hostOffense : state.guestOffense;
+    const myQueue = isHost ? state.hostSendQueue : state.guestSendQueue;
+
+    ctx.font = '11px monospace';
+
+    // Left: player's lives + coins
+    ctx.fillStyle = '#eee';
+    ctx.fillText(`HP:${myLives}`, 8, 26);
+    ctx.fillStyle = Math.round(state.displayCoins) < state.coins ? '#4caf50' : Math.round(state.displayCoins) > state.coins ? '#f44336' : '#eee';
+    ctx.fillText(`$${Math.round(state.displayCoins)}`, 60, 26);
+
+    // Offense meter
+    const meterX = 130;
+    const meterW = 120;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(meterX, 14, meterW, 12);
+    const fillPct = Math.min(1, myOffense / 50);
+    ctx.fillStyle = '#ff9800';
+    ctx.fillRect(meterX, 14, meterW * fillPct, 12);
+    ctx.fillStyle = '#eee';
+    ctx.font = '9px monospace';
+    ctx.fillText(`ATK:${Math.floor(myOffense)}`, meterX + 4, 24);
+    ctx.fillText(`+${state.offenseDrip.toFixed(1)}/s`, meterX + meterW + 4, 24);
+
+    // Center: match clock + next unlock
+    const clock = formatClock(state.matchClock);
+    ctx.fillStyle = '#ffeb3b';
+    ctx.font = 'bold 12px monospace';
+    const cw = ctx.measureText(clock).width;
+    ctx.fillText(clock, (CANVAS_W - cw) / 2, 18);
+
+    // Next tier unlock hint
+    let nextUnlock = '';
+    for (const [time, kinds] of BATTLE_TIERS) {
+      if (state.matchClock < time) {
+        const remaining = Math.ceil(time - state.matchClock);
+        const names = kinds.map(k => ENEMY_DEFS[k].name).join(', ');
+        nextUnlock = `${names} in ${formatClock(remaining)}`;
+        break;
+      }
+    }
+    if (nextUnlock) {
+      ctx.fillStyle = '#aaa';
+      ctx.font = '9px monospace';
+      const nw = ctx.measureText(nextUnlock).width;
+      ctx.fillText(nextUnlock, (CANVAS_W - nw) / 2, 32);
+    }
+
+    // Right: opponent lives + send queue
+    ctx.fillStyle = '#ef5350';
+    ctx.font = '11px monospace';
+    ctx.fillText(`Opp HP:${oppLives}`, CANVAS_W - 120, 26);
+
+    // Send queue indicator
+    const queueSize = myQueue.length;
+    for (let i = 0; i < BATTLE_MAX_QUEUE; i++) {
+      const qx = CANVAS_W - 160 + i * 12;
+      ctx.fillStyle = i < queueSize ? '#ff9800' : '#333';
+      ctx.fillRect(qx, 14, 10, 10);
+    }
+
+    // Music toggle (compact)
+    const mX = CANVAS_W - 24;
+    ctx.fillStyle = state.musicOn ? '#283593' : '#1a237e';
+    ctx.fillRect(mX, 10, 18, 18);
+    ctx.fillStyle = state.musicOn ? '#eee' : '#666';
+    ctx.font = '10px monospace';
+    ctx.fillText('M', mX + 3, 22);
+  }
+
+  private drawOffenseBar(state: GameState, barY: number): void {
+    const ctx = this.ctx;
+    const sendableKinds: EnemyKind[] = [EnemyKind.Walker, EnemyKind.Sprinter, EnemyKind.Sneaker, EnemyKind.Tank, EnemyKind.Healer];
+    const count = sendableKinds.length;
+    const isHost = state.viewSide === 'host';
+    const offense = isHost ? state.hostOffense : state.guestOffense;
+
+    for (let i = 0; i < count; i++) {
+      const kind = sendableKinds[i]!;
+      const def = ENEMY_DEFS[kind];
+      const cost = BATTLE_SEND_COSTS[kind] ?? 0;
+      const unlocked = state.unlockedTiers.includes(kind);
+      const affordable = offense >= cost;
+      const myQueue = isHost ? state.hostSendQueue : state.guestSendQueue;
+      const queueFull = myQueue.length >= BATTLE_MAX_QUEUE;
+
+      const x = Math.floor(i * CANVAS_W / count);
+      const w = Math.floor((i + 1) * CANVAS_W / count) - x;
+
+      const canSend = unlocked && affordable && !queueFull;
+      ctx.fillStyle = !unlocked ? '#111' : canSend ? '#4a1a00' : '#2a1000';
+      ctx.fillRect(x + 1, barY + 4, w - 2, HUD_BOT_H - 8);
+
+      // Enemy name
+      ctx.fillStyle = unlocked ? (canSend ? '#ff9800' : '#888') : '#444';
+      ctx.font = '11px monospace';
+      ctx.fillText(def.name, x + 6, barY + 20);
+
+      // Cost or lock time
+      ctx.font = '10px monospace';
+      if (unlocked) {
+        ctx.fillText(`${cost}pts`, x + 6, barY + 34);
+      } else {
+        // Find unlock time
+        for (const [time, kinds] of BATTLE_TIERS) {
+          if (kinds.includes(kind)) {
+            ctx.fillText(`@${formatClock(time)}`, x + 6, barY + 34);
+            break;
+          }
+        }
+      }
+
+      // Sprite preview
+      const sprite = ENEMY_SPRITES[kind];
+      if (sprite) {
+        ctx.globalAlpha = unlocked ? 0.8 : 0.3;
+        ctx.drawImage(sprite, x + w - 36, barY + 8, 28, 28);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Offense/Defense toggle button
+    this.drawModeToggle(barY, true);
+  }
+
+  /** Draw the offense/defense mode toggle button */
+  private drawModeToggle(barY: number, isOffense: boolean): void {
+    const ctx = this.ctx;
+    const btnX = CANVAS_W - 80;
+    const btnY = barY + 6;
+    const btnW = 74;
+    const btnH = HUD_BOT_H - 12;
+
+    ctx.fillStyle = isOffense ? '#4a1a00' : '#1a237e';
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.strokeStyle = isOffense ? '#ff9800' : '#7c4dff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(btnX, btnY, btnW, btnH);
+
+    ctx.fillStyle = isOffense ? '#ff9800' : '#7c4dff';
+    ctx.font = '10px monospace';
+    const label = isOffense ? 'Defense' : 'Offense';
+    ctx.fillText(label, btnX + 6, btnY + 14);
+    ctx.fillStyle = '#666';
+    ctx.font = '8px monospace';
+    ctx.fillText('[Tab]', btnX + 6, btnY + 26);
+  }
+
+  /** Draw path overlay for one side of the battle board */
+  private drawBattlePath(state: GameState, side: 'host' | 'guest'): void {
+    const ctx = this.ctx;
+    const path = side === 'host' ? state.hostCachedPath : state.guestCachedPath;
+    const locked = side === 'host' ? state.hostLockedCells : state.guestLockedCells;
+    const grid = side === 'host' ? state.hostGrid : state.guestGrid;
+    if (!path || !grid || path.length <= 1) return;
+
+    for (const p of path) {
+      const cell = grid.getCell(p.col, p.row);
+      if (cell === CellType.Spawn || cell === CellType.Goal) continue;
+      const isLocked = locked.has(`${p.col},${p.row}`);
+      // Convert local col to global for rendering
+      const globalCol = side === 'host' ? p.col : p.col + BATTLE_COLS;
+      ctx.globalAlpha = isLocked ? 0.25 : 0.15;
+      ctx.fillStyle = isLocked ? '#f44336' : '#ffeb3b';
+      ctx.fillRect(globalCol * TILE + 4, p.row * TILE + 4, TILE - 8, TILE - 8);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function formatClock(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }

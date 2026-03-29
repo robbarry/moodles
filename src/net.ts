@@ -24,10 +24,22 @@ export class PeerConnection {
   conn: DataConnection | null = null;
   connected = false;
   roomCode = '';
-  onMessage: ((msg: NetMessage) => void) | null = null;
+  private _onMessage: ((msg: NetMessage) => void) | null = null;
+  private _messageBuffer: NetMessage[] = [];
   onConnected: (() => void) | null = null;
   onDisconnected: (() => void) | null = null;
   onError: ((err: string) => void) | null = null;
+
+  /** Setting onMessage flushes any messages that arrived before the handler was installed */
+  get onMessage(): ((msg: NetMessage) => void) | null { return this._onMessage; }
+  set onMessage(handler: ((msg: NetMessage) => void) | null) {
+    this._onMessage = handler;
+    if (handler && this._messageBuffer.length > 0) {
+      const buffered = this._messageBuffer;
+      this._messageBuffer = [];
+      for (const msg of buffered) handler(msg);
+    }
+  }
 
   constructor(role: Role) {
     this.role = role;
@@ -123,7 +135,12 @@ export class PeerConnection {
       // PeerJS JSON serialization delivers objects directly
       const msg = data as NetMessage;
       if (msg && typeof msg.type === 'string') {
-        this.onMessage?.(msg);
+        if (this._onMessage) {
+          this._onMessage(msg);
+        } else {
+          // Buffer messages until a handler is installed
+          this._messageBuffer.push(msg);
+        }
       }
     });
 
