@@ -81,8 +81,8 @@ export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
     kind: TowerKind.Zapper,
     name: 'Zapper',
     shortName: 'Zap',
-    cost: 40,
-    damage: 15,
+    cost: 35,
+    damage: 18,
     fireRate: 1.0,
     range: 5,
     splash: 0,
@@ -92,10 +92,10 @@ export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
     kind: TowerKind.Frost,
     name: 'Frost Tower',
     shortName: 'Frost',
-    cost: 35,
+    cost: 30,
     damage: 3,
     fireRate: 1.0,
-    range: 2.5,
+    range: 3,
     splash: 0,
     color: '#80deea',
     slowFactor: 0.4,
@@ -118,13 +118,13 @@ export const TOWER_DEFS: Record<TowerKind, TowerDef> = {
     kind: TowerKind.CoinTree,
     name: 'Coin Tree',
     shortName: 'Coin',
-    cost: 60,
+    cost: 50,
     damage: 0,
     fireRate: 0,
     range: 0,
     splash: 0,
     color: '#ffd54f',
-    incomePerWave: 8,
+    incomePerWave: 10,
   },
 };
 
@@ -201,7 +201,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
 
 // ── Economy ──
 
-export const STARTING_COINS = 50;
+export const STARTING_COINS = 60;
 export const STARTING_LIVES = 10;
 export const WALL_COST = 3;
 export const WAVE_BONUS = 5;

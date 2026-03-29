@@ -92,20 +92,23 @@ export const WAVES: WaveDef[] = [
 ];
 
 /** Generate an endless-mode wave for waveNum > 10.
- *  Difficulty scales via enemy counts and type mix, not HP inflation. */
+ *  Difficulty scales primarily via enemy counts and type mix.
+ *  Gentle HP scaling: +5% every 5 endless waves to prevent runaway wealth. */
 export function generateEndlessWave(waveNum: number): WaveDef {
   const n = waveNum - 10;
   const baseCount = 15 + Math.floor(n * 2);
+  // Gentle HP scaling: +5% per 5 endless waves (1.0 → 1.05 → 1.10 → ...)
+  const hpMult = 1 + Math.floor(n / 5) * 0.05;
 
   const entries: WaveEntry[] = [
-    { kind: EnemyKind.Walker, count: baseCount, hpMultiplier: 1 },
+    { kind: EnemyKind.Walker, count: baseCount, hpMultiplier: hpMult },
   ];
 
-  if (n >= 1) entries.push({ kind: EnemyKind.Sneaker, count: Math.floor(baseCount * 0.6), hpMultiplier: 1 });
-  if (n >= 2) entries.push({ kind: EnemyKind.Wanderer, count: Math.floor(baseCount * 0.4), hpMultiplier: 1 });
-  if (n >= 2 && n % 2 === 0) entries.push({ kind: EnemyKind.Sprinter, count: Math.floor(baseCount * 0.5), hpMultiplier: 1 });
-  if (n >= 3 && n % 3 === 0) entries.push({ kind: EnemyKind.Tank, count: 1 + Math.floor(n / 3), hpMultiplier: 1 });
-  if (n >= 5 && n % 5 === 0) entries.push({ kind: EnemyKind.Healer, count: 1 + Math.floor(n / 5), hpMultiplier: 1 });
+  if (n >= 1) entries.push({ kind: EnemyKind.Sneaker, count: Math.floor(baseCount * 0.6), hpMultiplier: hpMult });
+  if (n >= 2) entries.push({ kind: EnemyKind.Wanderer, count: Math.floor(baseCount * 0.4), hpMultiplier: hpMult });
+  if (n >= 2 && n % 2 === 0) entries.push({ kind: EnemyKind.Sprinter, count: Math.floor(baseCount * 0.5), hpMultiplier: hpMult });
+  if (n >= 3 && n % 3 === 0) entries.push({ kind: EnemyKind.Tank, count: 1 + Math.floor(n / 3), hpMultiplier: hpMult });
+  if (n >= 5 && n % 5 === 0) entries.push({ kind: EnemyKind.Healer, count: 1 + Math.floor(n / 5), hpMultiplier: hpMult });
 
   return { entries };
 }
