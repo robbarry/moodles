@@ -40,6 +40,7 @@ function startGame(role: Role, connection?: PeerConnection, battleMode = false) 
     `;
 
     peer.onConnected = () => {
+      peer!.send({ type: 'mode', mode: 'coop' });
       startGame('host', peer!);
     };
   } catch (err) {
@@ -103,31 +104,29 @@ function startGame(role: Role, connection?: PeerConnection, battleMode = false) 
   try {
     await peer.join(code);
 
-    // Wait for mode message from host to determine battle vs co-op
-    let battleMode = false;
-    const originalOnMessage = peer.onMessage;
+    // Wait for explicit mode message from host before starting.
+    // Host always sends { type: 'mode', mode: 'battle' | 'coop' } on connect.
+    // Guest blocks here until it arrives — no timeout guessing.
+    let started = false;
+
+    const launchWithMode = (battleMode: boolean) => {
+      if (started) return;
+      started = true;
+      startGame('guest', peer!, battleMode);
+    };
 
     peer.onMessage = (msg) => {
-      if (msg.type === 'mode' && msg.mode === 'battle') {
-        battleMode = true;
+      if (msg.type === 'mode') {
+        launchWithMode(msg.mode === 'battle');
       }
-      // Forward to original handler once game starts
-      originalOnMessage?.(msg);
     };
 
     peer.onConnected = () => {
-      // Small delay to receive mode message before starting
-      setTimeout(() => {
-        startGame('guest', peer!, battleMode);
-      }, 100);
+      lobbyJoin.innerHTML = '<p class="status">Connected — waiting for host...</p>';
     };
 
-    // May already be connected
-    if (peer.connected) {
-      setTimeout(() => {
-        startGame('guest', peer!, battleMode);
-      }, 100);
-    }
+    // If already connected, host may have sent mode before we set the handler.
+    // That's fine — the mode message will arrive on the next tick via onMessage.
   } catch (err) {
     lobbyJoin.innerHTML = `
       <p class="status">Failed: ${err}</p>

@@ -1330,6 +1330,8 @@ function updateProjectiles(state: GameState, dt: number): void {
       if (proj.splash > 0) {
         const splashPixels = proj.splash * TILE;
         for (const enemy of state.enemies) {
+          // In battle mode, splash can't cross the seam
+          if (state.battleMode && enemy.targetSide !== target.targetSide) continue;
           const edx = enemy.x - target.x;
           const edy = enemy.y - target.y;
           const edist = Math.sqrt(edx * edx + edy * edy);
@@ -1367,6 +1369,8 @@ function updateProjectiles(state: GameState, dt: number): void {
           let closestDist = Infinity;
           for (const enemy of state.enemies) {
             if (hitIds.has(enemy.id)) continue;
+            // In battle mode, chain can't bounce across the seam
+            if (state.battleMode && enemy.targetSide !== target.targetSide) continue;
             const edx = enemy.x - lastX;
             const edy = enemy.y - lastY;
             const edist = Math.sqrt(edx * edx + edy * edy);
@@ -1925,6 +1929,13 @@ export class Game {
           }
           return;
         }
+      }
+
+      // Battle mode: offense/defense toggle button
+      if (this.state.battleMode && this.renderer.mouseToModeToggle(e)) {
+        this.state.offenseMode = !this.state.offenseMode;
+        this.state.selectedBuild = null;
+        return;
       }
 
       // Build bar buttons (local UI selection for both roles)

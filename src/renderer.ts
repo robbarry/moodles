@@ -66,6 +66,16 @@ export class Renderer {
     return -1;
   }
 
+  /** Check if mouse clicks the offense/defense mode toggle in battle mode */
+  mouseToModeToggle(e: MouseEvent): boolean {
+    const { x, y } = this.mouseToLogical(e);
+    const barY = HUD_TOP_H + CANVAS_H;
+    // Toggle button is at top-right of build bar
+    const btnX = CANVAS_W - 80;
+    const btnY = barY + 6;
+    return x >= btnX && x < btnX + 74 && y >= btnY && y < btnY + HUD_BOT_H - 12;
+  }
+
   /** Check if mouse clicks the Start Wave button */
   mouseToStartBtn(e: MouseEvent): boolean {
     const { x, y } = this.mouseToLogical(e);
@@ -566,11 +576,9 @@ export class Renderer {
       }
     }
 
-    // Tab hint for battle mode
+    // Offense/Defense toggle button for battle mode
     if (state.battleMode) {
-      ctx.fillStyle = '#666';
-      ctx.font = '9px monospace';
-      ctx.fillText('[Tab] Offense', CANVAS_W - 90, barY + 42);
+      this.drawModeToggle(barY, false);
     }
   }
 
@@ -843,10 +851,31 @@ export class Renderer {
       }
     }
 
-    // Tab hint
+    // Offense/Defense toggle button
+    this.drawModeToggle(barY, true);
+  }
+
+  /** Draw the offense/defense mode toggle button */
+  private drawModeToggle(barY: number, isOffense: boolean): void {
+    const ctx = this.ctx;
+    const btnX = CANVAS_W - 80;
+    const btnY = barY + 6;
+    const btnW = 74;
+    const btnH = HUD_BOT_H - 12;
+
+    ctx.fillStyle = isOffense ? '#4a1a00' : '#1a237e';
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.strokeStyle = isOffense ? '#ff9800' : '#7c4dff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(btnX, btnY, btnW, btnH);
+
+    ctx.fillStyle = isOffense ? '#ff9800' : '#7c4dff';
+    ctx.font = '10px monospace';
+    const label = isOffense ? 'Defense' : 'Offense';
+    ctx.fillText(label, btnX + 6, btnY + 14);
     ctx.fillStyle = '#666';
-    ctx.font = '9px monospace';
-    ctx.fillText('[Tab] Defense', CANVAS_W - 90, barY + 42);
+    ctx.font = '8px monospace';
+    ctx.fillText('[Tab]', btnX + 6, btnY + 26);
   }
 
   /** Draw path overlay for one side of the battle board */
