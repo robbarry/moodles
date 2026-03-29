@@ -212,6 +212,45 @@ export enum GamePhase {
   Build,
   Wave,
   Lost,
+  Battle,
+}
+
+// ── Battle Mode ──
+
+export const BATTLE_COLS = 10;  // Each half is 10 columns wide
+export const BATTLE_LIVES = 5;
+export const BATTLE_SEND_SPACING = 0.5;  // seconds between queued spawns
+export const BATTLE_MAX_QUEUE = 3;
+
+/** Tier unlock timeline: [matchSeconds, EnemyKind[], dripRate] */
+export const BATTLE_TIERS: [number, EnemyKind[], number][] = [
+  [0, [EnemyKind.Walker, EnemyKind.Sprinter], 1.5],
+  [90, [EnemyKind.Sneaker], 2.5],
+  [180, [EnemyKind.Tank], 3.5],
+  [270, [EnemyKind.Healer], 4.5],
+];
+
+/** Offense meter cost to send each enemy type */
+export const BATTLE_SEND_COSTS: Partial<Record<EnemyKind, number>> = {
+  [EnemyKind.Walker]: 10,
+  [EnemyKind.Sprinter]: 12,
+  [EnemyKind.Sneaker]: 20,
+  [EnemyKind.Tank]: 45,
+  [EnemyKind.Healer]: 35,
+};
+
+/** Kill bounties in battle mode (50% of solo values) */
+export const BATTLE_KILL_BOUNTIES: Record<EnemyKind, number> = {
+  [EnemyKind.Walker]: 1,
+  [EnemyKind.Sneaker]: 2,
+  [EnemyKind.Wanderer]: 0,
+  [EnemyKind.Tank]: 5,
+  [EnemyKind.Sprinter]: 1,
+  [EnemyKind.Healer]: 3,
+};
+
+export interface SendEntry {
+  kind: EnemyKind;
 }
 
 export interface Projectile {

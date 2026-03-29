@@ -9,10 +9,10 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 
 let peer: PeerConnection | null = null;
 
-function startGame(role: Role, connection?: PeerConnection) {
+function startGame(role: Role, connection?: PeerConnection, battleMode = false) {
   lobby.classList.add('hidden');
   canvas.classList.remove('hidden');
-  const game = new Game(canvas, role, connection ?? null);
+  const game = new Game(canvas, role, connection ?? null, battleMode);
   game.start();
 }
 
@@ -21,7 +21,7 @@ function startGame(role: Role, connection?: PeerConnection) {
   startGame('solo');
 };
 
-// ── Host ──
+// ── Host Co-op ──
 (window as unknown as Record<string, unknown>).showHost = async () => {
   lobbyMenu.classList.add('hidden');
   lobbyHost.classList.remove('hidden');
@@ -47,6 +47,34 @@ function startGame(role: Role, connection?: PeerConnection) {
   }
 };
 
+// ── Host Battle ──
+(window as unknown as Record<string, unknown>).showHostBattle = async () => {
+  lobbyMenu.classList.add('hidden');
+  lobbyHost.classList.remove('hidden');
+  lobbyHost.innerHTML = '<p class="status">Creating battle room...</p>';
+
+  peer = new PeerConnection('host');
+
+  try {
+    const code = await peer.host();
+    lobbyHost.innerHTML = `
+      <p class="step">Share this code with your opponent:</p>
+      <div style="font-size:32px;color:#ff5722;margin:16px 0;letter-spacing:4px;user-select:all">${code}</div>
+      <button class="btn-copy" onclick="navigator.clipboard.writeText('${code}')">Copy Code</button>
+      <p class="status" style="color:#ff5722">BATTLE MODE — Waiting for opponent...</p>
+      <br><button class="btn-back" onclick="backToMenu()">Cancel</button>
+    `;
+
+    peer.onConnected = () => {
+      // Tell guest this is battle mode
+      peer!.send({ type: 'mode', mode: 'battle' });
+      startGame('host', peer!, true);
+    };
+  } catch (err) {
+    lobbyHost.innerHTML = `<p class="status">Error: ${err}</p><button class="btn-back" onclick="backToMenu()">Back</button>`;
+  }
+};
+
 // ── Join ──
 (window as unknown as Record<string, unknown>).showJoin = () => {
   lobbyMenu.classList.add('hidden');
@@ -61,7 +89,6 @@ function startGame(role: Role, connection?: PeerConnection) {
     <button class="btn-connect" onclick="joinGame()">Join</button>
     <br><button class="btn-back" onclick="backToMenu()">Back</button>
   `;
-  // Focus the input
   setTimeout(() => (document.getElementById('join-code') as HTMLInputElement)?.focus(), 100);
 };
 
@@ -75,12 +102,31 @@ function startGame(role: Role, connection?: PeerConnection) {
 
   try {
     await peer.join(code);
-    peer.onConnected = () => {
-      startGame('guest', peer!);
+
+    // Wait for mode message from host to determine battle vs co-op
+    let battleMode = false;
+    const originalOnMessage = peer.onMessage;
+
+    peer.onMessage = (msg) => {
+      if (msg.type === 'mode' && msg.mode === 'battle') {
+        battleMode = true;
+      }
+      // Forward to original handler once game starts
+      originalOnMessage?.(msg);
     };
+
+    peer.onConnected = () => {
+      // Small delay to receive mode message before starting
+      setTimeout(() => {
+        startGame('guest', peer!, battleMode);
+      }, 100);
+    };
+
     // May already be connected
     if (peer.connected) {
-      startGame('guest', peer);
+      setTimeout(() => {
+        startGame('guest', peer!, battleMode);
+      }, 100);
     }
   } catch (err) {
     lobbyJoin.innerHTML = `
